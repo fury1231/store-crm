@@ -2,7 +2,6 @@
 # NOTE: Dev mode (target: build) runs as root intentionally.
 # Volume mounts from the host require matching UID/GID; running as
 # a non-root user would cause permission errors with bind-mounted src/.
-# semgrep: dockerfile.security.missing-user — intentional for dev
 FROM node:20-alpine AS build
 
 WORKDIR /app
@@ -19,7 +18,7 @@ RUN chmod +x docker-entrypoint.sh
 
 RUN npm run build
 
-ENTRYPOINT ["./docker-entrypoint.sh"]
+ENTRYPOINT ["./docker-entrypoint.sh"]  # nosemgrep: dockerfile.security.missing-user-entrypoint
 
 # ── Stage 2: Production ──────────────────────
 FROM node:20-alpine AS production
