@@ -7,7 +7,10 @@ COPY package.json ./
 RUN npm install
 
 COPY index.html ./
-COPY tsconfig.json tsconfig.node.json ./
+# Use standalone tsconfig for Docker (avoids ../../tsconfig.base.json
+# which is outside the build context)
+COPY tsconfig.docker.json ./tsconfig.json
+COPY tsconfig.node.json ./
 COPY vite.config.ts postcss.config.js tailwind.config.js ./
 COPY src/ ./src/
 
@@ -18,6 +21,8 @@ FROM nginxinc/nginx-unprivileged:alpine AS production
 
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+USER nginx
 
 EXPOSE 8080
 

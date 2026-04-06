@@ -1,4 +1,8 @@
 # ── Stage 1: Build ────────────────────────────
+# NOTE: Dev mode (target: build) runs as root intentionally.
+# Volume mounts from the host require matching UID/GID; running as
+# a non-root user would cause permission errors with bind-mounted src/.
+# semgrep: dockerfile.security.missing-user — intentional for dev
 FROM node:20-alpine AS build
 
 WORKDIR /app
@@ -6,7 +10,9 @@ WORKDIR /app
 COPY package.json ./
 RUN npm install
 
-COPY tsconfig.json ./
+# Use standalone tsconfig for Docker (avoids ../../tsconfig.base.json
+# which is outside the build context)
+COPY tsconfig.docker.json ./tsconfig.json
 COPY src/ ./src/
 COPY docker-entrypoint.sh ./
 RUN chmod +x docker-entrypoint.sh
