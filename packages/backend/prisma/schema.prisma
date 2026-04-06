@@ -53,11 +53,26 @@ model User {
   storeId      String?
   createdAt    DateTime @default(now())
 
-  store        Store?        @relation(fields: [storeId], references: [id])
-  interactions Interaction[]
-  sales        Sale[]
+  store         Store?         @relation(fields: [storeId], references: [id])
+  interactions  Interaction[]
+  sales         Sale[]
+  refreshTokens RefreshToken[]
 
   @@index([storeId])
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  token     String    @unique
+  userId    String
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
 }
 
 model Customer {

@@ -10,6 +10,7 @@ import type {
   Sale,
   SaleItem,
   InteractionProduct,
+  RefreshToken,
 } from './generated/prisma/client';
 
 // ── Enum validation ─────────────────────────────
@@ -75,6 +76,7 @@ describe('Schema models', () => {
     'Sale',
     'SaleItem',
     'InteractionProduct',
+    'RefreshToken',
   ];
 
   it('should define all required models', () => {
@@ -281,6 +283,27 @@ describe('InteractionProduct fields', () => {
   });
 });
 
+describe('RefreshToken fields', () => {
+  const fields = fieldsOf(Prisma.RefreshTokenScalarFieldEnum);
+
+  it('should have id, token, userId, expiresAt, revokedAt, createdAt', () => {
+    expect(fields).toEqual(
+      expect.arrayContaining([
+        'id',
+        'token',
+        'userId',
+        'expiresAt',
+        'revokedAt',
+        'createdAt',
+      ]),
+    );
+  });
+
+  it('should have exactly 6 scalar fields', () => {
+    expect(fields).toHaveLength(6);
+  });
+});
+
 // ── Type-level sanity checks ────────────────────
 // These verify the TypeScript types are generated correctly.
 // If the types were wrong, the file would fail to compile.
@@ -341,5 +364,17 @@ describe('Generated TypeScript types', () => {
       productId: 'prod-1',
     };
     expect(mock).not.toHaveProperty('id');
+  });
+
+  it('RefreshToken type has expected shape with nullable revokedAt', () => {
+    const mock: RefreshToken = {
+      id: 'rt_1',
+      token: 'opaque-hex-string',
+      userId: 'usr_1',
+      expiresAt: new Date(),
+      revokedAt: null,
+      createdAt: new Date(),
+    };
+    expect(mock.revokedAt).toBeNull();
   });
 });
