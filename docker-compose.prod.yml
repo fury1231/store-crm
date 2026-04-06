@@ -1,0 +1,49 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: store-crm-db
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    container_name: store-crm-backend
+    build:
+      context: ./packages/backend
+      dockerfile: Dockerfile
+      target: production
+    restart: always
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    container_name: store-crm-frontend
+    build:
+      context: ./packages/frontend
+      dockerfile: Dockerfile
+      target: production
+    restart: always
+    ports:
+      - "80:8080"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+    name: store-crm-pgdata

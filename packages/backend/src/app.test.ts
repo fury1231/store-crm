@@ -2,6 +2,25 @@
 import { describe, it, expect } from 'vitest';
 import { app } from './app';
 
+describe('Docker health check endpoint', () => {
+  it('should register GET /health route', () => {
+    const routes = (app as any)._router.stack
+      .filter((layer: any) => layer.route)
+      .map((layer: any) => ({
+        path: layer.route.path,
+        method: Object.keys(layer.route.methods)[0],
+      }));
+
+    const healthRoute = routes.find(
+      (r: any) => r.path === '/health' && r.method === 'get',
+    );
+
+    expect(healthRoute).toBeDefined();
+    expect(healthRoute.path).toBe('/health');
+    expect(healthRoute.method).toBe('get');
+  });
+});
+
 describe('Health endpoint', () => {
   it('should return status ok', async () => {
     // Create a mock request/response to test the route handler
