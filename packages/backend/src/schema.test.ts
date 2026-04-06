@@ -144,7 +144,7 @@ describe('User fields', () => {
 describe('Customer fields', () => {
   const fields = fieldsOf(Prisma.CustomerScalarFieldEnum);
 
-  it('should have id, name, phone, email, address, notes, storeId, createdAt, updatedAt', () => {
+  it('should have id, name, phone, email, address, notes, storeId, createdAt, updatedAt, deletedAt', () => {
     expect(fields).toEqual(
       expect.arrayContaining([
         'id',
@@ -156,12 +156,13 @@ describe('Customer fields', () => {
         'storeId',
         'createdAt',
         'updatedAt',
+        'deletedAt',
       ]),
     );
   });
 
-  it('should have exactly 9 scalar fields', () => {
-    expect(fields).toHaveLength(9);
+  it('should have exactly 10 scalar fields', () => {
+    expect(fields).toHaveLength(10);
   });
 });
 
