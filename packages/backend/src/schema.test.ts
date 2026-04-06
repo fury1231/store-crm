@@ -100,7 +100,7 @@ function fieldsOf(enumObj: Record<string, string>): string[] {
 describe('Store fields', () => {
   const fields = fieldsOf(Prisma.StoreScalarFieldEnum);
 
-  it('should have id, name, address, phone, createdAt, updatedAt', () => {
+  it('should have id, name, address, phone, createdAt, updatedAt, deletedAt', () => {
     expect(fields).toEqual(
       expect.arrayContaining([
         'id',
@@ -109,12 +109,13 @@ describe('Store fields', () => {
         'phone',
         'createdAt',
         'updatedAt',
+        'deletedAt',
       ]),
     );
   });
 
-  it('should have exactly 6 scalar fields', () => {
-    expect(fields).toHaveLength(6);
+  it('should have exactly 7 scalar fields', () => {
+    expect(fields).toHaveLength(7);
   });
 });
 
