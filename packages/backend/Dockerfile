@@ -23,6 +23,9 @@ RUN npm install --omit=dev
 
 COPY --from=build /app/dist ./dist
 
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+USER appuser
+
 EXPOSE 3001
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
