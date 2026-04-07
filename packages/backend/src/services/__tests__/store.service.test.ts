@@ -64,11 +64,11 @@ describe('createStore', () => {
 
 // ── listStores ─────────────────────────────────────────
 describe('listStores', () => {
-  it('should return paginated stores with meta', async () => {
+  it('should return paginated stores with meta (admin scope)', async () => {
     mockStore.count.mockResolvedValue(25);
     mockStore.findMany.mockResolvedValue([fakeStore]);
 
-    const result = await listStores({ page: 2, limit: 10 });
+    const result = await listStores({ page: 2, limit: 10 }, 'all');
 
     expect(mockStore.count).toHaveBeenCalledWith({ where: { deletedAt: null } });
     expect(mockStore.findMany).toHaveBeenCalledWith({
@@ -86,11 +86,40 @@ describe('listStores', () => {
     expect(result.stores).toEqual([fakeStore]);
   });
 
+  it('should restrict listing by id allow-list when scope is an array', async () => {
+    mockStore.count.mockResolvedValue(1);
+    mockStore.findMany.mockResolvedValue([fakeStore]);
+
+    await listStores({ page: 1, limit: 20 }, ['cls_abc123']);
+
+    expect(mockStore.count).toHaveBeenCalledWith({
+      where: { deletedAt: null, id: { in: ['cls_abc123'] } },
+    });
+    expect(mockStore.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { deletedAt: null, id: { in: ['cls_abc123'] } },
+      }),
+    );
+  });
+
+  it('should return zero stores for an empty allow-list', async () => {
+    mockStore.count.mockResolvedValue(0);
+    mockStore.findMany.mockResolvedValue([]);
+
+    const result = await listStores({ page: 1, limit: 20 }, []);
+
+    expect(mockStore.count).toHaveBeenCalledWith({
+      where: { deletedAt: null, id: { in: [] } },
+    });
+    expect(result.stores).toEqual([]);
+    expect(result.meta.total).toBe(0);
+  });
+
   it('should use default pagination (page 1, limit 20)', async () => {
     mockStore.count.mockResolvedValue(0);
     mockStore.findMany.mockResolvedValue([]);
 
-    const result = await listStores({ page: 1, limit: 20 });
+    const result = await listStores({ page: 1, limit: 20 }, 'all');
 
     expect(mockStore.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ skip: 0, take: 20 }),
@@ -103,7 +132,7 @@ describe('listStores', () => {
     mockStore.count.mockResolvedValue(0);
     mockStore.findMany.mockResolvedValue([]);
 
-    await listStores({ page: 1, limit: 20 });
+    await listStores({ page: 1, limit: 20 }, 'all');
 
     expect(mockStore.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { deletedAt: null } }),
@@ -113,10 +142,10 @@ describe('listStores', () => {
 
 // ── getStoreById ───────────────────────────────────────
 describe('getStoreById', () => {
-  it('should return a store when found', async () => {
+  it('should return a store when found inside admin scope', async () => {
     mockStore.findFirst.mockResolvedValue(fakeStore);
 
-    const result = await getStoreById('cls_abc123');
+    const result = await getStoreById('cls_abc123', 'all');
 
     expect(mockStore.findFirst).toHaveBeenCalledWith({
       where: { id: 'cls_abc123', deletedAt: null },
@@ -124,11 +153,31 @@ describe('getStoreById', () => {
     expect(result).toEqual(fakeStore);
   });
 
+  it('should return a store when the id is inside the user allow-list', async () => {
+    // For id-in-allow-list checks, the service short-circuits the scope check
+    // BEFORE hitting the database — once the id passes the allow-list, the
+    // findFirst call uses a plain `{ id, deletedAt: null }` filter.
+    mockStore.findFirst.mockResolvedValue(fakeStore);
+
+    const result = await getStoreById('cls_abc123', ['cls_abc123']);
+
+    expect(mockStore.findFirst).toHaveBeenCalledWith({
+      where: { id: 'cls_abc123', deletedAt: null },
+    });
+    expect(result).toEqual(fakeStore);
+  });
+
+  it('should throw NotFoundError when the id is outside the user allow-list', async () => {
+    mockStore.findFirst.mockResolvedValue(null);
+
+    await expect(getStoreById('cls_other', ['cls_abc123'])).rejects.toThrow(NotFoundError);
+  });
+
   it('should throw NotFoundError when store does not exist', async () => {
     mockStore.findFirst.mockResolvedValue(null);
 
-    await expect(getStoreById('nonexistent')).rejects.toThrow(NotFoundError);
-    await expect(getStoreById('nonexistent')).rejects.toThrow(
+    await expect(getStoreById('nonexistent', 'all')).rejects.toThrow(NotFoundError);
+    await expect(getStoreById('nonexistent', 'all')).rejects.toThrow(
       "Store with id 'nonexistent' not found",
     );
   });
@@ -136,7 +185,7 @@ describe('getStoreById', () => {
   it('should throw NotFoundError for a soft-deleted store', async () => {
     mockStore.findFirst.mockResolvedValue(null);
 
-    await expect(getStoreById('deleted_id')).rejects.toThrow(NotFoundError);
+    await expect(getStoreById('deleted_id', 'all')).rejects.toThrow(NotFoundError);
   });
 });
 
@@ -147,7 +196,7 @@ describe('updateStore', () => {
     mockStore.findFirst.mockResolvedValue(fakeStore);
     mockStore.update.mockResolvedValue(updated);
 
-    const result = await updateStore('cls_abc123', { name: 'Updated Name' });
+    const result = await updateStore('cls_abc123', { name: 'Updated Name' }, 'all');
 
     expect(mockStore.findFirst).toHaveBeenCalledWith({
       where: { id: 'cls_abc123', deletedAt: null },
@@ -162,7 +211,16 @@ describe('updateStore', () => {
   it('should throw NotFoundError when updating non-existent store', async () => {
     mockStore.findFirst.mockResolvedValue(null);
 
-    await expect(updateStore('nonexistent', { name: 'X' })).rejects.toThrow(NotFoundError);
+    await expect(updateStore('nonexistent', { name: 'X' }, 'all')).rejects.toThrow(NotFoundError);
+    expect(mockStore.update).not.toHaveBeenCalled();
+  });
+
+  it('should refuse to update stores outside the allow-list', async () => {
+    mockStore.findFirst.mockResolvedValue(null);
+
+    await expect(
+      updateStore('cls_other', { name: 'Hijack' }, ['cls_abc123']),
+    ).rejects.toThrow(NotFoundError);
     expect(mockStore.update).not.toHaveBeenCalled();
   });
 
@@ -171,7 +229,7 @@ describe('updateStore', () => {
     mockStore.findFirst.mockResolvedValue(fakeStore);
     mockStore.update.mockResolvedValue(cleared);
 
-    const result = await updateStore('cls_abc123', { phone: null });
+    const result = await updateStore('cls_abc123', { phone: null }, 'all');
 
     expect(mockStore.update).toHaveBeenCalledWith({
       where: { id: 'cls_abc123' },
@@ -188,7 +246,7 @@ describe('deleteStore', () => {
     mockStore.findFirst.mockResolvedValue(fakeStore);
     mockStore.update.mockResolvedValue(deleted);
 
-    const result = await deleteStore('cls_abc123');
+    const result = await deleteStore('cls_abc123', 'all');
 
     expect(mockStore.update).toHaveBeenCalledWith({
       where: { id: 'cls_abc123' },
@@ -200,13 +258,13 @@ describe('deleteStore', () => {
   it('should throw NotFoundError when deleting non-existent store', async () => {
     mockStore.findFirst.mockResolvedValue(null);
 
-    await expect(deleteStore('nonexistent')).rejects.toThrow(NotFoundError);
+    await expect(deleteStore('nonexistent', 'all')).rejects.toThrow(NotFoundError);
     expect(mockStore.update).not.toHaveBeenCalled();
   });
 
   it('should throw NotFoundError when deleting an already-deleted store', async () => {
     mockStore.findFirst.mockResolvedValue(null);
 
-    await expect(deleteStore('already_deleted')).rejects.toThrow(NotFoundError);
+    await expect(deleteStore('already_deleted', 'all')).rejects.toThrow(NotFoundError);
   });
 });

@@ -14,8 +14,15 @@ const mockUser = vi.hoisted(() => ({
   findUnique: vi.fn(),
 }));
 
+// `storeContext` middleware (M2) calls `prisma.store.findFirst` for ADMIN
+// requests that omit the `X-Store-Id` header (to default to the first store).
+// Even non-ADMIN tests touch this path indirectly, so the mock must exist.
+const mockStore = vi.hoisted(() => ({
+  findFirst: vi.fn(),
+}));
+
 vi.mock('../../prismaClient', () => ({
-  prisma: { customer: mockCustomer, user: mockUser },
+  prisma: { customer: mockCustomer, user: mockUser, store: mockStore },
 }));
 
 // Import app + auth helpers after mock setup
@@ -56,6 +63,9 @@ beforeEach(() => {
     role: 'STAFF',
     storeId: defaultTestUser.storeId,
   });
+  // ADMIN requests with no `X-Store-Id` header default to the first non-deleted
+  // store. Tests that switch the role to ADMIN rely on this lookup succeeding.
+  mockStore.findFirst.mockResolvedValue({ id: defaultTestUser.storeId });
 });
 
 afterEach(() => {
@@ -98,14 +108,24 @@ describe('POST /api/customers', () => {
     expect(res.body.error.details).toBeDefined();
   });
 
-  it('should return 400 when storeId is missing', async () => {
+  it('should ignore any storeId sent in the request body (storeId comes from context)', async () => {
+    // Defence-in-depth: even if a malicious client tries to inject a foreign
+    // store id, the validator must strip it and the service must use the
+    // store id from `req.storeId` (resolved by storeContext middleware).
+    mockCustomer.findFirst.mockResolvedValue(null);
+    mockCustomer.create.mockResolvedValue(fakeCustomer);
+
     const res = await request(app)
       .post('/api/customers')
       .set('Authorization', staffAuth())
-      .send({ name: 'John Doe' });
+      .send({ name: 'John Doe', storeId: 'str_HIJACKED' });
 
-    expect(res.status).toBe(400);
-    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    expect(res.status).toBe(201);
+    // The service was invoked with the user's actual storeId, not the one
+    // from the body.
+    expect(mockCustomer.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ storeId: defaultTestUser.storeId }),
+    });
   });
 
   it('should return 400 for invalid email format', async () => {
@@ -324,17 +344,19 @@ describe('GET /api/customers', () => {
     expect(res.body.meta.total).toBe(0);
   });
 
-  it('should filter by storeId when provided', async () => {
+  it('should always scope by the user\'s storeId from context (ignores ?storeId query)', async () => {
+    // M2: storeId comes from the resolved store context (req.storeId),
+    // never from a query parameter — sending one must NOT change the filter.
     mockCustomer.count.mockResolvedValue(0);
     mockCustomer.findMany.mockResolvedValue([]);
 
     await request(app)
-      .get('/api/customers?storeId=str_abc123')
+      .get('/api/customers?storeId=str_HIJACKED')
       .set('Authorization', staffAuth());
 
     expect(mockCustomer.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ storeId: 'str_abc123' }),
+        where: expect.objectContaining({ storeId: defaultTestUser.storeId }),
       }),
     );
   });
@@ -555,7 +577,137 @@ describe('Auth — customer routes', () => {
     const res = await request(app)
       .post('/api/customers')
       .set('Authorization', makeAuth())
-      .send({ name: 'X', storeId: 'str_abc123' });
+      .send({ name: 'X' });
     expect(res.status).toBe(201);
+  });
+});
+
+// ── Multi-store isolation (M2 — Issue #12) ───────────────
+describe('Multi-store data isolation', () => {
+  it('STAFF cannot read a customer from another store (404, not 403)', async () => {
+    // STAFF assigned to STORE_A asks for a customer that lives in STORE_B.
+    // The service queries with `storeId = STORE_A` so the row is invisible
+    // and Prisma returns null → controller raises NotFoundError.
+    mockUser.findUnique.mockResolvedValue({
+      id: defaultTestUser.id,
+      email: defaultTestUser.email,
+      role: 'STAFF',
+      storeId: 'str_A',
+    });
+    mockCustomer.findFirst.mockResolvedValue(null);
+
+    const res = await request(app)
+      .get('/api/customers/cus_in_store_B')
+      .set('Authorization', staffAuth());
+
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('NOT_FOUND');
+    // The actual where clause used the staff member's store, not the
+    // attacker-controlled URL or any header.
+    expect(mockCustomer.findFirst).toHaveBeenCalledWith({
+      where: expect.objectContaining({ storeId: 'str_A' }),
+    });
+  });
+
+  it('STAFF cannot widen scope by sending an X-Store-Id header (404)', async () => {
+    // The header MUST be ignored for non-admin users; if it points elsewhere
+    // the request is rejected with 404 (no existence leak).
+    mockUser.findUnique.mockResolvedValue({
+      id: defaultTestUser.id,
+      email: defaultTestUser.email,
+      role: 'STAFF',
+      storeId: 'str_A',
+    });
+
+    const res = await request(app)
+      .get('/api/customers')
+      .set('Authorization', staffAuth())
+      .set('X-Store-Id', 'str_B');
+
+    expect(res.status).toBe(404);
+    // listCustomers must never have been reached for the foreign store.
+    expect(mockCustomer.findMany).not.toHaveBeenCalled();
+  });
+
+  it('STAFF without an assigned store is rejected with 403', async () => {
+    mockUser.findUnique.mockResolvedValue({
+      id: defaultTestUser.id,
+      email: defaultTestUser.email,
+      role: 'STAFF',
+      storeId: null,
+    });
+
+    const res = await request(app)
+      .get('/api/customers')
+      .set('Authorization', staffAuth());
+
+    expect(res.status).toBe(403);
+    expect(mockCustomer.findMany).not.toHaveBeenCalled();
+  });
+
+  it('ADMIN can target any store via X-Store-Id header', async () => {
+    mockUser.findUnique.mockResolvedValue({
+      id: defaultTestUser.id,
+      email: defaultTestUser.email,
+      role: 'ADMIN',
+      storeId: null,
+    });
+    // The middleware verifies the header points at a real store first.
+    mockStore.findFirst.mockResolvedValue({ id: 'str_B' });
+    mockCustomer.count.mockResolvedValue(0);
+    mockCustomer.findMany.mockResolvedValue([]);
+
+    const res = await request(app)
+      .get('/api/customers')
+      .set('Authorization', adminAuth())
+      .set('X-Store-Id', 'str_B');
+
+    expect(res.status).toBe(200);
+    expect(mockCustomer.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ storeId: 'str_B' }),
+      }),
+    );
+  });
+
+  it('ADMIN with no header defaults to the first non-deleted store', async () => {
+    mockUser.findUnique.mockResolvedValue({
+      id: defaultTestUser.id,
+      email: defaultTestUser.email,
+      role: 'ADMIN',
+      storeId: null,
+    });
+    mockStore.findFirst.mockResolvedValue({ id: 'str_DEFAULT' });
+    mockCustomer.count.mockResolvedValue(0);
+    mockCustomer.findMany.mockResolvedValue([]);
+
+    const res = await request(app)
+      .get('/api/customers')
+      .set('Authorization', adminAuth());
+
+    expect(res.status).toBe(200);
+    expect(mockCustomer.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ storeId: 'str_DEFAULT' }),
+      }),
+    );
+  });
+
+  it('ADMIN with an unknown X-Store-Id is rejected with 404', async () => {
+    mockUser.findUnique.mockResolvedValue({
+      id: defaultTestUser.id,
+      email: defaultTestUser.email,
+      role: 'ADMIN',
+      storeId: null,
+    });
+    mockStore.findFirst.mockResolvedValue(null); // header points at nothing
+
+    const res = await request(app)
+      .get('/api/customers')
+      .set('Authorization', adminAuth())
+      .set('X-Store-Id', 'str_GHOST');
+
+    expect(res.status).toBe(404);
+    expect(mockCustomer.findMany).not.toHaveBeenCalled();
   });
 });

@@ -13,8 +13,12 @@ const mockRefreshToken = vi.hoisted(() => ({
   update: vi.fn(),
 }));
 
+const mockStore = vi.hoisted(() => ({
+  findMany: vi.fn(),
+}));
+
 vi.mock('../../prismaClient', () => ({
-  prisma: { user: mockUser, refreshToken: mockRefreshToken },
+  prisma: { user: mockUser, refreshToken: mockRefreshToken, store: mockStore },
 }));
 
 // Import after mock setup
@@ -308,7 +312,7 @@ describe('logout', () => {
 
 // ── getMe ────────────────────────────────────────────
 describe('getMe', () => {
-  it('should return user profile with store info', async () => {
+  it('should return user profile with store info for STAFF/MANAGER', async () => {
     mockUser.findUnique.mockResolvedValue({
       ...fakeUser,
       store: { id: 'str_abc123', name: 'My Store' },
@@ -319,6 +323,61 @@ describe('getMe', () => {
     expect(result.id).toBe('usr_abc123');
     expect(result.email).toBe('test@example.com');
     expect(result.store).toEqual({ id: 'str_abc123', name: 'My Store' });
+  });
+
+  it('returns availableStores = [user.store] for STAFF/MANAGER', async () => {
+    mockUser.findUnique.mockResolvedValue({
+      ...fakeUser,
+      store: { id: 'str_abc123', name: 'My Store' },
+    });
+
+    const result = await getMe('usr_abc123');
+
+    expect(result.availableStores).toEqual([
+      { id: 'str_abc123', name: 'My Store' },
+    ]);
+    // Non-admin must NOT trigger a global store list query.
+    expect(mockStore.findMany).not.toHaveBeenCalled();
+  });
+
+  it('returns availableStores = [] for STAFF/MANAGER with no assigned store', async () => {
+    mockUser.findUnique.mockResolvedValue({
+      ...fakeUser,
+      storeId: null,
+      store: null,
+    });
+
+    const result = await getMe('usr_abc123');
+
+    expect(result.availableStores).toEqual([]);
+    expect(mockStore.findMany).not.toHaveBeenCalled();
+  });
+
+  it('returns availableStores = ALL non-deleted stores for ADMIN', async () => {
+    mockUser.findUnique.mockResolvedValue({
+      ...fakeUser,
+      role: 'ADMIN',
+      storeId: null,
+      store: null,
+    });
+    mockStore.findMany.mockResolvedValue([
+      { id: 'str_a', name: 'Store A' },
+      { id: 'str_b', name: 'Store B' },
+    ]);
+
+    const result = await getMe('usr_abc123');
+
+    expect(result.role).toBe('ADMIN');
+    expect(result.availableStores).toEqual([
+      { id: 'str_a', name: 'Store A' },
+      { id: 'str_b', name: 'Store B' },
+    ]);
+    // Verify the admin store list query excludes soft-deleted rows.
+    expect(mockStore.findMany).toHaveBeenCalledWith({
+      where: { deletedAt: null },
+      select: { id: true, name: true },
+      orderBy: { createdAt: 'asc' },
+    });
   });
 
   it('should throw UnauthorizedError if user not found', async () => {

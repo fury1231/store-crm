@@ -157,7 +157,16 @@ export async function logout(token: string): Promise<void> {
   });
 }
 
-/** Get the current user's profile by ID. */
+/**
+ * Get the current user's profile by ID.
+ *
+ * The response includes `availableStores`, the list of stores the user is
+ * allowed to switch into via the `X-Store-Id` header. The frontend uses
+ * this to render the store-switcher UI:
+ *
+ *   - ADMIN          → every non-deleted store
+ *   - MANAGER/STAFF  → only their assigned store (length 0 or 1)
+ */
 export async function getMe(userId: string) {
   const user = await prisma.user.findUnique({
     where: { id: userId },
@@ -170,6 +179,17 @@ export async function getMe(userId: string) {
     throw new UnauthorizedError('User not found');
   }
 
+  let availableStores: { id: string; name: string }[];
+  if (user.role === 'ADMIN') {
+    availableStores = await prisma.store.findMany({
+      where: { deletedAt: null },
+      select: { id: true, name: true },
+      orderBy: { createdAt: 'asc' },
+    });
+  } else {
+    availableStores = user.store ? [user.store] : [];
+  }
+
   return {
     id: user.id,
     email: user.email,
@@ -177,5 +197,6 @@ export async function getMe(userId: string) {
     role: user.role,
     storeId: user.storeId,
     store: user.store,
+    availableStores,
   };
 }
