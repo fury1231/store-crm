@@ -61,6 +61,17 @@ function processQueue(error: unknown, token: string | null = null) {
   failedQueue = [];
 }
 
+/**
+ * Reset the module-level refresh state. Intended for use in tests
+ * (e.g. in `afterEach`) so that an aborted refresh in one test cannot
+ * leave `isRefreshing = true` and cause subsequent tests to silently
+ * queue their 401s forever.
+ */
+export function resetApiClientState() {
+  isRefreshing = false;
+  failedQueue = [];
+}
+
 apiClient.interceptors.response.use(
   (response) => response,
   async (error: AxiosError) => {

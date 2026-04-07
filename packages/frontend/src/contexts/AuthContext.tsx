@@ -5,10 +5,39 @@ import {
   useEffect,
   useCallback,
   useRef,
+  useState,
   type ReactNode,
 } from 'react';
 import apiClient, { configureApiClient } from '../api/client';
 import type { AuthState, AuthAction, User, LoginResponse, RefreshResponse, MeResponse } from '../types/auth';
+
+// --- JWT helpers ---
+
+/**
+ * Decode a JWT payload segment.
+ *
+ * JWT sections are encoded in **base64url** (RFC 7515), not standard base64:
+ *   '+' → '-', '/' → '_', and '=' padding is stripped.
+ * `atob()` only accepts standard base64 and throws `InvalidCharacterError`
+ * on `-` or `_`. We normalize back to standard base64 and restore padding
+ * before decoding, so real backend tokens (which commonly contain UUID/email
+ * fields that produce `-`/`_` in the payload) are decoded correctly.
+ *
+ * Returns `null` if the token is malformed.
+ */
+export function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  try {
+    const segment = token.split('.')[1];
+    if (!segment) return null;
+    // base64url → base64
+    const b64 = segment.replace(/-/g, '+').replace(/_/g, '/');
+    // Restore '=' padding to a multiple of 4
+    const padded = b64 + '==='.slice((b64.length + 3) % 4);
+    return JSON.parse(atob(padded));
+  } catch {
+    return null;
+  }
+}
 
 // --- Reducer ---
 
@@ -68,6 +97,12 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(authReducer, null, getInitialState);
+  // currentStoreId is held in state (so consumers re-render on change)
+  // AND mirrored to a ref, so the axios request interceptor (a closure
+  // captured once at configure time) can read the latest value
+  // synchronously without waiting for React to commit the next render.
+  // This mirrors the accessTokenRef pattern below.
+  const [currentStoreId, setCurrentStoreIdState] = useState<string | null>(null);
   const storeIdRef = useRef<string | null>(null);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -102,6 +137,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (state.user?.storeId && !storeIdRef.current) {
       storeIdRef.current = state.user.storeId;
+      setCurrentStoreIdState(state.user.storeId);
     }
   }, [state.user]);
 
@@ -131,21 +167,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         clearTimeout(refreshTimerRef.current);
       }
 
-      try {
-        const payload = JSON.parse(atob(token.split('.')[1]));
-        const expiresAt = payload.exp * 1000;
-        const refreshAt = expiresAt - Date.now() - 2 * 60 * 1000; // 2 min before expiry
+      const payload = decodeJwtPayload(token);
+      if (!payload || typeof payload.exp !== 'number') {
+        // Invalid / non-standard token — skip scheduling
+        return;
+      }
 
-        if (refreshAt > 0) {
-          refreshTimerRef.current = setTimeout(async () => {
-            const newToken = await doRefresh();
-            if (newToken) {
-              scheduleRefresh(newToken);
-            }
-          }, refreshAt);
-        }
-      } catch {
-        // Invalid token format — skip scheduling
+      const expiresAt = payload.exp * 1000;
+      const refreshAt = expiresAt - Date.now() - 2 * 60 * 1000; // 2 min before expiry
+
+      if (refreshAt > 0) {
+        refreshTimerRef.current = setTimeout(async () => {
+          const newToken = await doRefresh();
+          if (newToken) {
+            scheduleRefresh(newToken);
+          }
+        }, refreshAt);
       }
     },
     [doRefresh],
@@ -247,6 +284,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const currentRefreshToken = state.refreshToken;
     dispatch({ type: 'LOGOUT' });
     storeIdRef.current = null;
+    setCurrentStoreIdState(null);
 
     if (currentRefreshToken) {
       try {
@@ -258,7 +296,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [state.refreshToken]);
 
   const setCurrentStoreId = useCallback((id: string | null) => {
+    // Mirror to ref first (synchronous, for the axios interceptor closure),
+    // then update state so consumers re-render.
     storeIdRef.current = id;
+    setCurrentStoreIdState(id);
   }, []);
 
   return (
@@ -267,7 +308,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         ...state,
         login,
         logout,
-        currentStoreId: storeIdRef.current,
+        currentStoreId,
         setCurrentStoreId,
       }}
     >

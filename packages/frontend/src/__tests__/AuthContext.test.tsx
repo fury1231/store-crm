@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, act } from '@testing-library/react';
-import { AuthProvider, useAuth } from '../contexts/AuthContext';
+import { AuthProvider, useAuth, decodeJwtPayload } from '../contexts/AuthContext';
 import apiClient from '../api/client';
 
 vi.mock('../api/client', () => ({
@@ -16,12 +16,22 @@ vi.mock('../api/client', () => ({
   configureApiClient: vi.fn(),
 }));
 
-// Helper: build a fake JWT with a given expiry (seconds from now)
+// Helper: build a fake JWT with a given expiry (seconds from now).
+// Produces real base64url encoding (RFC 7515): '+' → '-', '/' → '_',
+// stripped '=' padding — matching what a real backend emits.
+function base64url(obj: object): string {
+  return btoa(JSON.stringify(obj))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
 function makeToken(expiresInSeconds: number): string {
-  const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-  const payload = btoa(
-    JSON.stringify({ sub: 'user-1', exp: Math.floor(Date.now() / 1000) + expiresInSeconds }),
-  );
+  const header = base64url({ alg: 'HS256', typ: 'JWT' });
+  const payload = base64url({
+    sub: 'user-1',
+    exp: Math.floor(Date.now() / 1000) + expiresInSeconds,
+  });
   const signature = 'fake-signature';
   return `${header}.${payload}.${signature}`;
 }
@@ -270,5 +280,53 @@ describe('AuthContext', () => {
 
       errSpy.mockRestore();
     });
+  });
+});
+
+describe('decodeJwtPayload', () => {
+  it('decodes a standard JWT payload', () => {
+    const token = makeToken(3600);
+    const payload = decodeJwtPayload(token);
+    expect(payload).not.toBeNull();
+    expect(payload?.sub).toBe('user-1');
+    expect(typeof payload?.exp).toBe('number');
+  });
+
+  it('decodes a base64url payload containing - and _ (regression for atob bug)', () => {
+    // Craft a payload whose base64 encoding contains '+' and '/', which
+    // become '-' and '_' in base64url. These characters would have caused
+    // the previous `atob()` implementation to throw InvalidCharacterError.
+    // Bytes 0xFB and 0xFF produce '+' and '/' in standard base64.
+    // The JSON string below includes characters chosen to reliably produce
+    // both '-' and '_' (and stripped padding) when base64url-encoded.
+    const claims = { sub: '??>>>???', role: 'ADMIN', exp: 1_900_000_000 };
+    const b64 = btoa(JSON.stringify(claims));
+    // Sanity check: standard base64 output contains '+' or '/' (otherwise
+    // this test isn't actually exercising the regression path).
+    expect(/[+/]/.test(b64)).toBe(true);
+    const segment = b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const token = `header.${segment}.sig`;
+
+    const payload = decodeJwtPayload(token);
+    expect(payload).not.toBeNull();
+    expect(payload?.sub).toBe('??>>>???');
+    expect(payload?.role).toBe('ADMIN');
+    expect(payload?.exp).toBe(1_900_000_000);
+  });
+
+  it('returns null for a malformed token', () => {
+    expect(decodeJwtPayload('not-a-jwt')).toBeNull();
+    expect(decodeJwtPayload('')).toBeNull();
+    expect(decodeJwtPayload('header.!!!invalid!!!.sig')).toBeNull();
+  });
+
+  it('restores stripped base64url padding correctly', () => {
+    // '{"a":1}' → eyJhIjoxfQ== in base64 (2 padding chars).
+    // In base64url it becomes eyJhIjoxfQ (no padding) — atob() needs padding
+    // restored or it throws on spec-compliant implementations.
+    const segment = btoa('{"a":1}').replace(/=+$/, '');
+    expect(segment.endsWith('=')).toBe(false);
+    const payload = decodeJwtPayload(`h.${segment}.s`);
+    expect(payload).toEqual({ a: 1 });
   });
 });

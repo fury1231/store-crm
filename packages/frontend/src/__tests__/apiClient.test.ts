@@ -1,17 +1,21 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import MockAdapter from 'axios-mock-adapter';
-import apiClient, { configureApiClient } from '../api/client';
+import apiClient, { configureApiClient, resetApiClientState } from '../api/client';
 
 describe('apiClient', () => {
   let mock: MockAdapter;
 
   beforeEach(() => {
     mock = new MockAdapter(apiClient);
+    // Clear any in-flight refresh state leaked from a previous test.
+    resetApiClientState();
   });
 
   afterEach(() => {
     mock.restore();
-    // Reset configuration
+    // Reset module-level refresh state AND configuration so no test
+    // can leave `isRefreshing = true` and silently queue subsequent 401s.
+    resetApiClientState();
     configureApiClient({
       getAccessToken: () => null,
       getStoreId: () => null,
