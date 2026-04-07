@@ -76,15 +76,16 @@ model RefreshToken {
 }
 
 model Customer {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   name      String
   phone     String?
   email     String?
   address   String?
-  notes     String?
+  notes     String?   @db.Text
   storeId   String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
 
   store        Store         @relation(fields: [storeId], references: [id])
   tags         Tag[]         @relation("CustomerTags")
