@@ -1,13 +1,20 @@
 import { Router } from 'express';
 import * as customerController from '../controllers/customer.controller';
 import { asyncHandler } from '../utils/asyncHandler';
+import { authenticate } from '../middleware/authenticate';
+import { requirePermission } from '../middleware/authorize';
 
 const router = Router();
 
-router.post('/', asyncHandler(customerController.create));
-router.get('/', asyncHandler(customerController.list));
-router.get('/:id', asyncHandler(customerController.getById));
-router.put('/:id', asyncHandler(customerController.update));
-router.delete('/:id', asyncHandler(customerController.remove));
+// All customer routes require an authenticated user.
+router.use(asyncHandler(authenticate));
+
+// Customers — every role can CRUD within their store. Store-scope enforcement
+// lives in the service layer.
+router.post('/', requirePermission('customers:write'), asyncHandler(customerController.create));
+router.get('/', requirePermission('customers:read'), asyncHandler(customerController.list));
+router.get('/:id', requirePermission('customers:read'), asyncHandler(customerController.getById));
+router.put('/:id', requirePermission('customers:write'), asyncHandler(customerController.update));
+router.delete('/:id', requirePermission('customers:write'), asyncHandler(customerController.remove));
 
 export default router;

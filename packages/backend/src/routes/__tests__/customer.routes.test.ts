@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 
 // ── Mock Prisma (vi.hoisted so mock is available at hoist time) ──
@@ -10,12 +10,21 @@ const mockCustomer = vi.hoisted(() => ({
   count: vi.fn(),
 }));
 
-vi.mock('../../prismaClient', () => ({
-  prisma: { customer: mockCustomer },
+const mockUser = vi.hoisted(() => ({
+  findUnique: vi.fn(),
 }));
 
-// Import app after mock setup
+vi.mock('../../prismaClient', () => ({
+  prisma: { customer: mockCustomer, user: mockUser },
+}));
+
+// Import app + auth helpers after mock setup
 import { app } from '../../app';
+import {
+  TEST_JWT_SECRET,
+  authHeader,
+  defaultTestUser,
+} from '../../testHelpers/auth';
 
 // ── Fixtures ───────────────────────────────────────────
 const fakeCustomer = {
@@ -31,8 +40,26 @@ const fakeCustomer = {
   deletedAt: null,
 };
 
+// Customers — every role can CRUD. STAFF is the most restrictive role
+// that should still pass, so default to STAFF for the existing test suite.
+const adminAuth = () => authHeader({ role: 'ADMIN' });
+const managerAuth = () => authHeader({ role: 'MANAGER' });
+const staffAuth = () => authHeader({ role: 'STAFF' });
+
 beforeEach(() => {
   vi.clearAllMocks();
+  process.env.JWT_SECRET = TEST_JWT_SECRET;
+  // authenticate middleware looks up the user from the JWT — return one by default.
+  mockUser.findUnique.mockResolvedValue({
+    id: defaultTestUser.id,
+    email: defaultTestUser.email,
+    role: 'STAFF',
+    storeId: defaultTestUser.storeId,
+  });
+});
+
+afterEach(() => {
+  delete process.env.JWT_SECRET;
 });
 
 // ── POST /api/customers ───────────────────────────────
@@ -41,14 +68,17 @@ describe('POST /api/customers', () => {
     mockCustomer.findFirst.mockResolvedValue(null); // no duplicates
     mockCustomer.create.mockResolvedValue(fakeCustomer);
 
-    const res = await request(app).post('/api/customers').send({
-      name: 'John Doe',
-      phone: '+1234567890',
-      email: 'john@example.com',
-      address: '123 Main St',
-      notes: 'VIP customer',
-      storeId: 'str_abc123',
-    });
+    const res = await request(app)
+      .post('/api/customers')
+      .set('Authorization', staffAuth())
+      .send({
+        name: 'John Doe',
+        phone: '+1234567890',
+        email: 'john@example.com',
+        address: '123 Main St',
+        notes: 'VIP customer',
+        storeId: 'str_abc123',
+      });
 
     expect(res.status).toBe(201);
     expect(res.body.data.id).toBe('cus_abc123');
@@ -58,9 +88,10 @@ describe('POST /api/customers', () => {
   });
 
   it('should return 400 when name is missing', async () => {
-    const res = await request(app).post('/api/customers').send({
-      storeId: 'str_abc123',
-    });
+    const res = await request(app)
+      .post('/api/customers')
+      .set('Authorization', staffAuth())
+      .send({ storeId: 'str_abc123' });
 
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
@@ -68,41 +99,51 @@ describe('POST /api/customers', () => {
   });
 
   it('should return 400 when storeId is missing', async () => {
-    const res = await request(app).post('/api/customers').send({
-      name: 'John Doe',
-    });
+    const res = await request(app)
+      .post('/api/customers')
+      .set('Authorization', staffAuth())
+      .send({ name: 'John Doe' });
 
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
   });
 
   it('should return 400 for invalid email format', async () => {
-    const res = await request(app).post('/api/customers').send({
-      name: 'John',
-      storeId: 'str_abc123',
-      email: 'not-an-email',
-    });
+    const res = await request(app)
+      .post('/api/customers')
+      .set('Authorization', staffAuth())
+      .send({
+        name: 'John',
+        storeId: 'str_abc123',
+        email: 'not-an-email',
+      });
 
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
   });
 
   it('should return 400 for invalid phone format', async () => {
-    const res = await request(app).post('/api/customers').send({
-      name: 'John',
-      storeId: 'str_abc123',
-      phone: 'abc',
-    });
+    const res = await request(app)
+      .post('/api/customers')
+      .set('Authorization', staffAuth())
+      .send({
+        name: 'John',
+        storeId: 'str_abc123',
+        phone: 'abc',
+      });
 
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
   });
 
   it('should return 400 when name is empty string', async () => {
-    const res = await request(app).post('/api/customers').send({
-      name: '',
-      storeId: 'str_abc123',
-    });
+    const res = await request(app)
+      .post('/api/customers')
+      .set('Authorization', staffAuth())
+      .send({
+        name: '',
+        storeId: 'str_abc123',
+      });
 
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
@@ -119,10 +160,13 @@ describe('POST /api/customers', () => {
     };
     mockCustomer.create.mockResolvedValue(minimal);
 
-    const res = await request(app).post('/api/customers').send({
-      name: 'John Doe',
-      storeId: 'str_abc123',
-    });
+    const res = await request(app)
+      .post('/api/customers')
+      .set('Authorization', staffAuth())
+      .send({
+        name: 'John Doe',
+        storeId: 'str_abc123',
+      });
 
     expect(res.status).toBe(201);
     expect(res.body.data.phone).toBeNull();
@@ -135,12 +179,15 @@ describe('POST /api/customers', () => {
       .mockResolvedValueOnce(null); // email
     mockCustomer.create.mockResolvedValue(fakeCustomer);
 
-    const res = await request(app).post('/api/customers').send({
-      name: 'John Doe',
-      phone: '+1234567890',
-      email: 'john@example.com',
-      storeId: 'str_abc123',
-    });
+    const res = await request(app)
+      .post('/api/customers')
+      .set('Authorization', staffAuth())
+      .send({
+        name: 'John Doe',
+        phone: '+1234567890',
+        email: 'john@example.com',
+        storeId: 'str_abc123',
+      });
 
     expect(res.status).toBe(201);
     expect(res.body.data.id).toBe('cus_abc123');
@@ -156,7 +203,9 @@ describe('GET /api/customers', () => {
     mockCustomer.count.mockResolvedValue(1);
     mockCustomer.findMany.mockResolvedValue([fakeCustomer]);
 
-    const res = await request(app).get('/api/customers');
+    const res = await request(app)
+      .get('/api/customers')
+      .set('Authorization', staffAuth());
 
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveLength(1);
@@ -169,7 +218,9 @@ describe('GET /api/customers', () => {
     mockCustomer.count.mockResolvedValue(50);
     mockCustomer.findMany.mockResolvedValue([]);
 
-    const res = await request(app).get('/api/customers?page=3&limit=10');
+    const res = await request(app)
+      .get('/api/customers?page=3&limit=10')
+      .set('Authorization', staffAuth());
 
     expect(res.status).toBe(200);
     expect(res.body.meta.page).toBe(3);
@@ -181,7 +232,9 @@ describe('GET /api/customers', () => {
     mockCustomer.count.mockResolvedValue(1);
     mockCustomer.findMany.mockResolvedValue([fakeCustomer]);
 
-    const res = await request(app).get('/api/customers?search=john');
+    const res = await request(app)
+      .get('/api/customers?search=john')
+      .set('Authorization', staffAuth());
 
     expect(res.status).toBe(200);
     expect(mockCustomer.findMany).toHaveBeenCalledWith(
@@ -201,7 +254,9 @@ describe('GET /api/customers', () => {
     mockCustomer.count.mockResolvedValue(0);
     mockCustomer.findMany.mockResolvedValue([]);
 
-    const res = await request(app).get('/api/customers?sortBy=name&order=asc');
+    const res = await request(app)
+      .get('/api/customers?sortBy=name&order=asc')
+      .set('Authorization', staffAuth());
 
     expect(res.status).toBe(200);
     expect(mockCustomer.findMany).toHaveBeenCalledWith(
@@ -213,7 +268,7 @@ describe('GET /api/customers', () => {
     mockCustomer.count.mockResolvedValue(0);
     mockCustomer.findMany.mockResolvedValue([]);
 
-    await request(app).get('/api/customers');
+    await request(app).get('/api/customers').set('Authorization', staffAuth());
 
     expect(mockCustomer.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ orderBy: { createdAt: 'desc' } }),
@@ -221,28 +276,36 @@ describe('GET /api/customers', () => {
   });
 
   it('should return 400 for invalid sortBy', async () => {
-    const res = await request(app).get('/api/customers?sortBy=password');
+    const res = await request(app)
+      .get('/api/customers?sortBy=password')
+      .set('Authorization', staffAuth());
 
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
   });
 
   it('should return 400 for invalid order', async () => {
-    const res = await request(app).get('/api/customers?order=sideways');
+    const res = await request(app)
+      .get('/api/customers?order=sideways')
+      .set('Authorization', staffAuth());
 
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
   });
 
   it('should return 400 for invalid pagination', async () => {
-    const res = await request(app).get('/api/customers?page=-1');
+    const res = await request(app)
+      .get('/api/customers?page=-1')
+      .set('Authorization', staffAuth());
 
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
   });
 
   it('should return 400 when limit exceeds max (100)', async () => {
-    const res = await request(app).get('/api/customers?limit=200');
+    const res = await request(app)
+      .get('/api/customers?limit=200')
+      .set('Authorization', staffAuth());
 
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
@@ -252,7 +315,9 @@ describe('GET /api/customers', () => {
     mockCustomer.count.mockResolvedValue(0);
     mockCustomer.findMany.mockResolvedValue([]);
 
-    const res = await request(app).get('/api/customers');
+    const res = await request(app)
+      .get('/api/customers')
+      .set('Authorization', staffAuth());
 
     expect(res.status).toBe(200);
     expect(res.body.data).toEqual([]);
@@ -263,7 +328,9 @@ describe('GET /api/customers', () => {
     mockCustomer.count.mockResolvedValue(0);
     mockCustomer.findMany.mockResolvedValue([]);
 
-    await request(app).get('/api/customers?storeId=str_abc123');
+    await request(app)
+      .get('/api/customers?storeId=str_abc123')
+      .set('Authorization', staffAuth());
 
     expect(mockCustomer.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -278,7 +345,9 @@ describe('GET /api/customers/:id', () => {
   it('should return a customer with tags:[]', async () => {
     mockCustomer.findFirst.mockResolvedValue(fakeCustomer);
 
-    const res = await request(app).get('/api/customers/cus_abc123');
+    const res = await request(app)
+      .get('/api/customers/cus_abc123')
+      .set('Authorization', staffAuth());
 
     expect(res.status).toBe(200);
     expect(res.body.data.id).toBe('cus_abc123');
@@ -289,7 +358,9 @@ describe('GET /api/customers/:id', () => {
   it('should return 404 when customer not found', async () => {
     mockCustomer.findFirst.mockResolvedValue(null);
 
-    const res = await request(app).get('/api/customers/nonexistent');
+    const res = await request(app)
+      .get('/api/customers/nonexistent')
+      .set('Authorization', staffAuth());
 
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('NOT_FOUND');
@@ -305,6 +376,7 @@ describe('PUT /api/customers/:id', () => {
 
     const res = await request(app)
       .put('/api/customers/cus_abc123')
+      .set('Authorization', staffAuth())
       .send({ name: 'Jane Doe' });
 
     expect(res.status).toBe(200);
@@ -318,6 +390,7 @@ describe('PUT /api/customers/:id', () => {
 
     const res = await request(app)
       .put('/api/customers/nonexistent')
+      .set('Authorization', staffAuth())
       .send({ name: 'Jane Doe' });
 
     expect(res.status).toBe(404);
@@ -327,6 +400,7 @@ describe('PUT /api/customers/:id', () => {
   it('should return 400 for invalid email on update', async () => {
     const res = await request(app)
       .put('/api/customers/cus_abc123')
+      .set('Authorization', staffAuth())
       .send({ email: 'not-an-email' });
 
     expect(res.status).toBe(400);
@@ -337,7 +411,10 @@ describe('PUT /api/customers/:id', () => {
     mockCustomer.findFirst.mockResolvedValue(fakeCustomer);
     mockCustomer.update.mockResolvedValue({ ...fakeCustomer, phone: null });
 
-    const res = await request(app).put('/api/customers/cus_abc123').send({ phone: null });
+    const res = await request(app)
+      .put('/api/customers/cus_abc123')
+      .set('Authorization', staffAuth())
+      .send({ phone: null });
 
     expect(res.status).toBe(200);
     expect(res.body.data.phone).toBeNull();
@@ -351,6 +428,7 @@ describe('PUT /api/customers/:id', () => {
 
     const res = await request(app)
       .put('/api/customers/cus_abc123')
+      .set('Authorization', staffAuth())
       .send({ phone: '+9999999999' });
 
     expect(res.status).toBe(200);
@@ -365,7 +443,9 @@ describe('DELETE /api/customers/:id', () => {
     mockCustomer.findFirst.mockResolvedValue(fakeCustomer);
     mockCustomer.update.mockResolvedValue({ ...fakeCustomer, deletedAt: new Date() });
 
-    const res = await request(app).delete('/api/customers/cus_abc123');
+    const res = await request(app)
+      .delete('/api/customers/cus_abc123')
+      .set('Authorization', staffAuth());
 
     expect(res.status).toBe(204);
     expect(res.body).toEqual({});
@@ -378,7 +458,9 @@ describe('DELETE /api/customers/:id', () => {
   it('should return 404 when deleting non-existent customer', async () => {
     mockCustomer.findFirst.mockResolvedValue(null);
 
-    const res = await request(app).delete('/api/customers/nonexistent');
+    const res = await request(app)
+      .delete('/api/customers/nonexistent')
+      .set('Authorization', staffAuth());
 
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('NOT_FOUND');
@@ -390,7 +472,9 @@ describe('Error handling', () => {
   it('should return 500 for unexpected errors', async () => {
     mockCustomer.count.mockRejectedValue(new Error('DB connection failed'));
 
-    const res = await request(app).get('/api/customers');
+    const res = await request(app)
+      .get('/api/customers')
+      .set('Authorization', staffAuth());
 
     expect(res.status).toBe(500);
     expect(res.body.error.code).toBe('INTERNAL_ERROR');
@@ -399,10 +483,79 @@ describe('Error handling', () => {
   it('should return consistent error format', async () => {
     mockCustomer.findFirst.mockResolvedValue(null);
 
-    const res = await request(app).get('/api/customers/nonexistent');
+    const res = await request(app)
+      .get('/api/customers/nonexistent')
+      .set('Authorization', staffAuth());
 
     expect(res.body).toHaveProperty('error');
     expect(res.body.error).toHaveProperty('code');
     expect(res.body.error).toHaveProperty('message');
+  });
+});
+
+// ── Authentication & Authorization ───────────────────────
+describe('Auth — customer routes', () => {
+  it('returns 401 without an Authorization header', async () => {
+    const res = await request(app).get('/api/customers');
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+  });
+
+  it('returns 401 with a malformed Authorization header', async () => {
+    const res = await request(app)
+      .get('/api/customers')
+      .set('Authorization', 'NotBearer x');
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+  });
+
+  it('returns 401 with an invalid token', async () => {
+    const res = await request(app)
+      .get('/api/customers')
+      .set('Authorization', 'Bearer invalid.token.here');
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+  });
+
+  // All three roles can read AND write customers — verify each.
+  it.each([
+    ['ADMIN', adminAuth],
+    ['MANAGER', managerAuth],
+    ['STAFF', staffAuth],
+  ])('GET /api/customers allows %s', async (role, makeAuth) => {
+    mockUser.findUnique.mockResolvedValue({
+      id: defaultTestUser.id,
+      email: defaultTestUser.email,
+      role,
+      storeId: defaultTestUser.storeId,
+    });
+    mockCustomer.count.mockResolvedValue(0);
+    mockCustomer.findMany.mockResolvedValue([]);
+
+    const res = await request(app)
+      .get('/api/customers')
+      .set('Authorization', makeAuth());
+    expect(res.status).toBe(200);
+  });
+
+  it.each([
+    ['ADMIN', adminAuth],
+    ['MANAGER', managerAuth],
+    ['STAFF', staffAuth],
+  ])('POST /api/customers allows %s', async (role, makeAuth) => {
+    mockUser.findUnique.mockResolvedValue({
+      id: defaultTestUser.id,
+      email: defaultTestUser.email,
+      role,
+      storeId: defaultTestUser.storeId,
+    });
+    mockCustomer.findFirst.mockResolvedValue(null);
+    mockCustomer.create.mockResolvedValue(fakeCustomer);
+
+    const res = await request(app)
+      .post('/api/customers')
+      .set('Authorization', makeAuth())
+      .send({ name: 'X', storeId: 'str_abc123' });
+    expect(res.status).toBe(201);
   });
 });
