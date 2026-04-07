@@ -37,6 +37,12 @@ export class UnauthorizedError extends AppError {
   }
 }
 
+export class ForbiddenError extends AppError {
+  constructor(message = 'Insufficient permissions for this action') {
+    super(403, 'FORBIDDEN', message);
+  }
+}
+
 export class ConflictError extends AppError {
   constructor(message: string) {
     super(409, 'CONFLICT', message);

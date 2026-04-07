@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 
 // ── Mock Prisma (vi.hoisted so mock is available at hoist time) ──
@@ -10,12 +10,21 @@ const mockStore = vi.hoisted(() => ({
   count: vi.fn(),
 }));
 
-vi.mock('../../prismaClient', () => ({
-  prisma: { store: mockStore },
+const mockUser = vi.hoisted(() => ({
+  findUnique: vi.fn(),
 }));
 
-// Import app after mock setup
+vi.mock('../../prismaClient', () => ({
+  prisma: { store: mockStore, user: mockUser },
+}));
+
+// Import app + auth helpers after mock setup
 import { app } from '../../app';
+import {
+  TEST_JWT_SECRET,
+  authHeader,
+  defaultTestUser,
+} from '../../testHelpers/auth';
 
 // ── Fixtures ───────────────────────────────────────────
 const fakeStore = {
@@ -28,8 +37,25 @@ const fakeStore = {
   deletedAt: null,
 };
 
+// ADMIN by default — store routes require ADMIN for writes.
+const adminAuth = () => authHeader({ role: 'ADMIN' });
+const managerAuth = () => authHeader({ role: 'MANAGER' });
+const staffAuth = () => authHeader({ role: 'STAFF' });
+
 beforeEach(() => {
   vi.clearAllMocks();
+  process.env.JWT_SECRET = TEST_JWT_SECRET;
+  // authenticate middleware looks up the user from the JWT — return one by default.
+  mockUser.findUnique.mockResolvedValue({
+    id: defaultTestUser.id,
+    email: defaultTestUser.email,
+    role: 'ADMIN',
+    storeId: defaultTestUser.storeId,
+  });
+});
+
+afterEach(() => {
+  delete process.env.JWT_SECRET;
 });
 
 // ── POST /api/stores ──────────────────────────────────
@@ -39,6 +65,7 @@ describe('POST /api/stores', () => {
 
     const res = await request(app)
       .post('/api/stores')
+      .set('Authorization', adminAuth())
       .send({ name: 'Test Store', address: '123 Main St', phone: '+1234567890' });
 
     expect(res.status).toBe(201);
@@ -48,6 +75,7 @@ describe('POST /api/stores', () => {
   it('should return 400 when name is missing', async () => {
     const res = await request(app)
       .post('/api/stores')
+      .set('Authorization', adminAuth())
       .send({ address: '123 Main St' });
 
     expect(res.status).toBe(400);
@@ -58,6 +86,7 @@ describe('POST /api/stores', () => {
   it('should return 400 for invalid phone format', async () => {
     const res = await request(app)
       .post('/api/stores')
+      .set('Authorization', adminAuth())
       .send({ name: 'Store', phone: 'abc' });
 
     expect(res.status).toBe(400);
@@ -70,6 +99,7 @@ describe('POST /api/stores', () => {
 
     const res = await request(app)
       .post('/api/stores')
+      .set('Authorization', adminAuth())
       .send({ name: 'Test Store' });
 
     expect(res.status).toBe(201);
@@ -79,6 +109,7 @@ describe('POST /api/stores', () => {
   it('should return 400 when name is empty string', async () => {
     const res = await request(app)
       .post('/api/stores')
+      .set('Authorization', adminAuth())
       .send({ name: '' });
 
     expect(res.status).toBe(400);
@@ -92,7 +123,7 @@ describe('GET /api/stores', () => {
     mockStore.count.mockResolvedValue(1);
     mockStore.findMany.mockResolvedValue([fakeStore]);
 
-    const res = await request(app).get('/api/stores');
+    const res = await request(app).get('/api/stores').set('Authorization', adminAuth());
 
     expect(res.status).toBe(200);
     expect(res.body.data).toEqual([fakeStore]);
@@ -108,7 +139,9 @@ describe('GET /api/stores', () => {
     mockStore.count.mockResolvedValue(50);
     mockStore.findMany.mockResolvedValue([]);
 
-    const res = await request(app).get('/api/stores?page=3&limit=10');
+    const res = await request(app)
+      .get('/api/stores?page=3&limit=10')
+      .set('Authorization', adminAuth());
 
     expect(res.status).toBe(200);
     expect(res.body.meta.page).toBe(3);
@@ -118,7 +151,9 @@ describe('GET /api/stores', () => {
   });
 
   it('should return 400 for invalid pagination params', async () => {
-    const res = await request(app).get('/api/stores?page=-1');
+    const res = await request(app)
+      .get('/api/stores?page=-1')
+      .set('Authorization', adminAuth());
 
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
@@ -128,7 +163,7 @@ describe('GET /api/stores', () => {
     mockStore.count.mockResolvedValue(0);
     mockStore.findMany.mockResolvedValue([]);
 
-    const res = await request(app).get('/api/stores');
+    const res = await request(app).get('/api/stores').set('Authorization', adminAuth());
 
     expect(res.status).toBe(200);
     expect(res.body.data).toEqual([]);
@@ -141,7 +176,9 @@ describe('GET /api/stores/:id', () => {
   it('should return a store by id', async () => {
     mockStore.findFirst.mockResolvedValue(fakeStore);
 
-    const res = await request(app).get('/api/stores/cls_abc123');
+    const res = await request(app)
+      .get('/api/stores/cls_abc123')
+      .set('Authorization', adminAuth());
 
     expect(res.status).toBe(200);
     expect(res.body.data).toEqual(fakeStore);
@@ -150,7 +187,9 @@ describe('GET /api/stores/:id', () => {
   it('should return 404 when store not found', async () => {
     mockStore.findFirst.mockResolvedValue(null);
 
-    const res = await request(app).get('/api/stores/nonexistent');
+    const res = await request(app)
+      .get('/api/stores/nonexistent')
+      .set('Authorization', adminAuth());
 
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('NOT_FOUND');
@@ -167,6 +206,7 @@ describe('PUT /api/stores/:id', () => {
 
     const res = await request(app)
       .put('/api/stores/cls_abc123')
+      .set('Authorization', adminAuth())
       .send({ name: 'Updated' });
 
     expect(res.status).toBe(200);
@@ -178,6 +218,7 @@ describe('PUT /api/stores/:id', () => {
 
     const res = await request(app)
       .put('/api/stores/nonexistent')
+      .set('Authorization', adminAuth())
       .send({ name: 'Updated' });
 
     expect(res.status).toBe(404);
@@ -187,6 +228,7 @@ describe('PUT /api/stores/:id', () => {
   it('should return 400 for invalid phone on update', async () => {
     const res = await request(app)
       .put('/api/stores/cls_abc123')
+      .set('Authorization', adminAuth())
       .send({ phone: 'not-a-phone' });
 
     expect(res.status).toBe(400);
@@ -200,6 +242,7 @@ describe('PUT /api/stores/:id', () => {
 
     const res = await request(app)
       .put('/api/stores/cls_abc123')
+      .set('Authorization', adminAuth())
       .send({ phone: null });
 
     expect(res.status).toBe(200);
@@ -213,7 +256,9 @@ describe('DELETE /api/stores/:id', () => {
     mockStore.findFirst.mockResolvedValue(fakeStore);
     mockStore.update.mockResolvedValue({ ...fakeStore, deletedAt: new Date() });
 
-    const res = await request(app).delete('/api/stores/cls_abc123');
+    const res = await request(app)
+      .delete('/api/stores/cls_abc123')
+      .set('Authorization', adminAuth());
 
     expect(res.status).toBe(204);
     expect(res.body).toEqual({});
@@ -222,7 +267,9 @@ describe('DELETE /api/stores/:id', () => {
   it('should return 404 when deleting non-existent store', async () => {
     mockStore.findFirst.mockResolvedValue(null);
 
-    const res = await request(app).delete('/api/stores/nonexistent');
+    const res = await request(app)
+      .delete('/api/stores/nonexistent')
+      .set('Authorization', adminAuth());
 
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('NOT_FOUND');
@@ -234,7 +281,7 @@ describe('Error handling', () => {
   it('should return 500 for unexpected errors', async () => {
     mockStore.count.mockRejectedValue(new Error('DB connection failed'));
 
-    const res = await request(app).get('/api/stores');
+    const res = await request(app).get('/api/stores').set('Authorization', adminAuth());
 
     expect(res.status).toBe(500);
     expect(res.body.error.code).toBe('INTERNAL_ERROR');
@@ -244,10 +291,116 @@ describe('Error handling', () => {
   it('should return consistent error format', async () => {
     mockStore.findFirst.mockResolvedValue(null);
 
-    const res = await request(app).get('/api/stores/nonexistent');
+    const res = await request(app)
+      .get('/api/stores/nonexistent')
+      .set('Authorization', adminAuth());
 
     expect(res.body).toHaveProperty('error');
     expect(res.body.error).toHaveProperty('code');
     expect(res.body.error).toHaveProperty('message');
+  });
+});
+
+// ── Authentication & Authorization ───────────────────────
+describe('Auth — store routes', () => {
+  it('returns 401 without an Authorization header', async () => {
+    const res = await request(app).get('/api/stores');
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+  });
+
+  it('returns 401 with a malformed Authorization header', async () => {
+    const res = await request(app).get('/api/stores').set('Authorization', 'NotBearer x');
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+  });
+
+  it('returns 401 with an invalid token', async () => {
+    const res = await request(app)
+      .get('/api/stores')
+      .set('Authorization', 'Bearer invalid.token.here');
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+  });
+
+  it('returns 401 when authenticated user no longer exists', async () => {
+    mockUser.findUnique.mockResolvedValue(null);
+    const res = await request(app).get('/api/stores').set('Authorization', staffAuth());
+    expect(res.status).toBe(401);
+  });
+
+  // Read access — every role should pass
+  it.each([
+    ['ADMIN', adminAuth],
+    ['MANAGER', managerAuth],
+    ['STAFF', staffAuth],
+  ])('GET /api/stores allows %s', async (role, makeAuth) => {
+    mockUser.findUnique.mockResolvedValue({
+      id: defaultTestUser.id,
+      email: defaultTestUser.email,
+      role,
+      storeId: defaultTestUser.storeId,
+    });
+    mockStore.count.mockResolvedValue(0);
+    mockStore.findMany.mockResolvedValue([]);
+
+    const res = await request(app).get('/api/stores').set('Authorization', makeAuth());
+    expect(res.status).toBe(200);
+  });
+
+  // Write access — only ADMIN should pass
+  it.each([
+    ['MANAGER', managerAuth, 403],
+    ['STAFF', staffAuth, 403],
+  ])('POST /api/stores forbids %s with 403', async (role, makeAuth, status) => {
+    mockUser.findUnique.mockResolvedValue({
+      id: defaultTestUser.id,
+      email: defaultTestUser.email,
+      role,
+      storeId: defaultTestUser.storeId,
+    });
+
+    const res = await request(app)
+      .post('/api/stores')
+      .set('Authorization', makeAuth())
+      .send({ name: 'Test Store' });
+
+    expect(res.status).toBe(status);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(mockStore.create).not.toHaveBeenCalled();
+  });
+
+  it('PUT /api/stores/:id forbids STAFF with 403', async () => {
+    mockUser.findUnique.mockResolvedValue({
+      id: defaultTestUser.id,
+      email: defaultTestUser.email,
+      role: 'STAFF',
+      storeId: defaultTestUser.storeId,
+    });
+
+    const res = await request(app)
+      .put('/api/stores/cls_abc123')
+      .set('Authorization', staffAuth())
+      .send({ name: 'X' });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(mockStore.update).not.toHaveBeenCalled();
+  });
+
+  it('DELETE /api/stores/:id forbids MANAGER with 403', async () => {
+    mockUser.findUnique.mockResolvedValue({
+      id: defaultTestUser.id,
+      email: defaultTestUser.email,
+      role: 'MANAGER',
+      storeId: defaultTestUser.storeId,
+    });
+
+    const res = await request(app)
+      .delete('/api/stores/cls_abc123')
+      .set('Authorization', managerAuth());
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
   });
 });
