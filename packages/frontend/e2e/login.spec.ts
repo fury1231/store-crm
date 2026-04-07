@@ -21,8 +21,10 @@ test.describe('Login flow', () => {
     // Dashboard shows welcome message with user name
     await expect(page.getByText(/Welcome back, Alice/i)).toBeVisible();
 
-    // Store name should be displayed prominently in header
-    await expect(page.getByText('Main Street Store')).toBeVisible();
+    // Store name should be displayed prominently in header.
+    // Scope to <header> so we don't collide with the "Welcome to Main Street Store"
+    // h2 in the dashboard welcome card (Playwright strict mode — see #24).
+    await expect(page.locator('header').getByText('Main Street Store')).toBeVisible();
   });
 
   test('invalid credentials show error and stay on login page', async ({ page }) => {
