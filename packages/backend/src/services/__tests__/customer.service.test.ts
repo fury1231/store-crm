@@ -25,6 +25,9 @@ import {
 } from '../customer.service';
 
 // ── Fixtures ───────────────────────────────────────────
+const STORE_A = 'str_abc123';
+const STORE_B = 'str_other_999';
+
 const fakeCustomer = {
   id: 'cus_abc123',
   name: 'John Doe',
@@ -32,7 +35,7 @@ const fakeCustomer = {
   email: 'john@example.com',
   address: '123 Main St',
   notes: 'VIP customer',
-  storeId: 'str_abc123',
+  storeId: STORE_A,
   createdAt: new Date('2026-01-01'),
   updatedAt: new Date('2026-01-01'),
   deletedAt: null,
@@ -48,13 +51,12 @@ describe('createCustomer', () => {
     mockCustomer.findFirst.mockResolvedValue(null); // no duplicates
     mockCustomer.create.mockResolvedValue(fakeCustomer);
 
-    const result = await createCustomer({
+    const result = await createCustomer(STORE_A, {
       name: 'John Doe',
       phone: '+1234567890',
       email: 'john@example.com',
       address: '123 Main St',
       notes: 'VIP customer',
-      storeId: 'str_abc123',
     });
 
     expect(mockCustomer.create).toHaveBeenCalledWith({
@@ -64,7 +66,7 @@ describe('createCustomer', () => {
         email: 'john@example.com',
         address: '123 Main St',
         notes: 'VIP customer',
-        storeId: 'str_abc123',
+        storeId: STORE_A,
       },
     });
     expect(result.customer.name).toBe('John Doe');
@@ -73,7 +75,19 @@ describe('createCustomer', () => {
     expect(result.warnings).toEqual([]);
   });
 
-  it('should create a minimal customer (name + storeId only)', async () => {
+  it('should always inject storeId from context, ignoring any in body data', async () => {
+    mockCustomer.findFirst.mockResolvedValue(null);
+    mockCustomer.create.mockResolvedValue(fakeCustomer);
+
+    await createCustomer(STORE_A, { name: 'John Doe' });
+
+    // The storeId on the persisted record always comes from the first arg.
+    expect(mockCustomer.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ storeId: STORE_A }),
+    });
+  });
+
+  it('should create a minimal customer (name only — storeId from context)', async () => {
     mockCustomer.findFirst.mockResolvedValue(null);
     const minimal = {
       ...fakeCustomer,
@@ -84,10 +98,7 @@ describe('createCustomer', () => {
     };
     mockCustomer.create.mockResolvedValue(minimal);
 
-    const result = await createCustomer({
-      name: 'John Doe',
-      storeId: 'str_abc123',
-    });
+    const result = await createCustomer(STORE_A, { name: 'John Doe' });
 
     expect(result.customer.phone).toBeNull();
     expect(result.customer.email).toBeNull();
@@ -101,17 +112,15 @@ describe('createCustomer', () => {
       .mockResolvedValueOnce(null); // email check
     mockCustomer.create.mockResolvedValue(fakeCustomer);
 
-    const result = await createCustomer({
+    const result = await createCustomer(STORE_A, {
       name: 'John Doe',
       phone: '+1234567890',
       email: 'john@example.com',
-      storeId: 'str_abc123',
     });
 
     expect(result.warnings).toHaveLength(1);
     expect(result.warnings[0].field).toBe('phone');
     expect(result.warnings[0].existingCustomerId).toBe('existing_1');
-    // Critically: the customer was still created despite the warning.
     expect(mockCustomer.create).toHaveBeenCalled();
   });
 
@@ -121,11 +130,10 @@ describe('createCustomer', () => {
       .mockResolvedValueOnce({ id: 'existing_2' }); // email check
     mockCustomer.create.mockResolvedValue(fakeCustomer);
 
-    const result = await createCustomer({
+    const result = await createCustomer(STORE_A, {
       name: 'John Doe',
       phone: '+1234567890',
       email: 'john@example.com',
-      storeId: 'str_abc123',
     });
 
     expect(result.warnings).toHaveLength(1);
@@ -139,11 +147,10 @@ describe('createCustomer', () => {
       .mockResolvedValueOnce({ id: 'existing_email' });
     mockCustomer.create.mockResolvedValue(fakeCustomer);
 
-    const result = await createCustomer({
+    const result = await createCustomer(STORE_A, {
       name: 'John Doe',
       phone: '+1234567890',
       email: 'john@example.com',
-      storeId: 'str_abc123',
     });
 
     expect(result.warnings).toHaveLength(2);
@@ -153,20 +160,22 @@ describe('createCustomer', () => {
 
 // ── listCustomers ──────────────────────────────────────
 describe('listCustomers', () => {
-  it('should return paginated customers with meta and tags:[]', async () => {
+  it('should return paginated customers scoped to storeId with meta and tags:[]', async () => {
     mockCustomer.count.mockResolvedValue(25);
     mockCustomer.findMany.mockResolvedValue([fakeCustomer]);
 
-    const result = await listCustomers({
+    const result = await listCustomers(STORE_A, {
       page: 2,
       limit: 10,
       sortBy: 'createdAt',
       order: 'desc',
     });
 
-    expect(mockCustomer.count).toHaveBeenCalledWith({ where: { deletedAt: null } });
+    expect(mockCustomer.count).toHaveBeenCalledWith({
+      where: { deletedAt: null, storeId: STORE_A },
+    });
     expect(mockCustomer.findMany).toHaveBeenCalledWith({
-      where: { deletedAt: null },
+      where: { deletedAt: null, storeId: STORE_A },
       skip: 10,
       take: 10,
       orderBy: { createdAt: 'desc' },
@@ -176,11 +185,32 @@ describe('listCustomers', () => {
     expect(result.customers[0].tags).toEqual([]);
   });
 
-  it('should apply search across name, phone, email using contains+insensitive', async () => {
+  it('should always include storeId in the where clause (no leak across stores)', async () => {
+    mockCustomer.count.mockResolvedValue(0);
+    mockCustomer.findMany.mockResolvedValue([]);
+
+    await listCustomers(STORE_B, {
+      page: 1,
+      limit: 20,
+      sortBy: 'createdAt',
+      order: 'desc',
+    });
+
+    expect(mockCustomer.count).toHaveBeenCalledWith({
+      where: expect.objectContaining({ storeId: STORE_B }),
+    });
+    expect(mockCustomer.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ storeId: STORE_B }),
+      }),
+    );
+  });
+
+  it('should apply search across name, phone, email AND keep storeId filter', async () => {
     mockCustomer.count.mockResolvedValue(1);
     mockCustomer.findMany.mockResolvedValue([fakeCustomer]);
 
-    await listCustomers({
+    await listCustomers(STORE_A, {
       page: 1,
       limit: 20,
       search: 'john',
@@ -192,6 +222,7 @@ describe('listCustomers', () => {
       expect.objectContaining({
         where: {
           deletedAt: null,
+          storeId: STORE_A,
           OR: [
             { name: { contains: 'john', mode: 'insensitive' } },
             { phone: { contains: 'john', mode: 'insensitive' } },
@@ -206,7 +237,7 @@ describe('listCustomers', () => {
     mockCustomer.count.mockResolvedValue(0);
     mockCustomer.findMany.mockResolvedValue([]);
 
-    await listCustomers({
+    await listCustomers(STORE_A, {
       page: 1,
       limit: 20,
       sortBy: 'name',
@@ -218,30 +249,11 @@ describe('listCustomers', () => {
     );
   });
 
-  it('should filter by storeId when provided', async () => {
-    mockCustomer.count.mockResolvedValue(0);
-    mockCustomer.findMany.mockResolvedValue([]);
-
-    await listCustomers({
-      page: 1,
-      limit: 20,
-      storeId: 'str_abc123',
-      sortBy: 'createdAt',
-      order: 'desc',
-    });
-
-    expect(mockCustomer.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { deletedAt: null, storeId: 'str_abc123' },
-      }),
-    );
-  });
-
   it('should exclude soft-deleted customers from count and query', async () => {
     mockCustomer.count.mockResolvedValue(0);
     mockCustomer.findMany.mockResolvedValue([]);
 
-    await listCustomers({ page: 1, limit: 20, sortBy: 'createdAt', order: 'desc' });
+    await listCustomers(STORE_A, { page: 1, limit: 20, sortBy: 'createdAt', order: 'desc' });
 
     expect(mockCustomer.count).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ deletedAt: null }) }),
@@ -255,7 +267,7 @@ describe('listCustomers', () => {
     mockCustomer.count.mockResolvedValue(0);
     mockCustomer.findMany.mockResolvedValue([]);
 
-    const result = await listCustomers({
+    const result = await listCustomers(STORE_A, {
       page: 1,
       limit: 20,
       sortBy: 'createdAt',
@@ -270,13 +282,13 @@ describe('listCustomers', () => {
 
 // ── getCustomerById ────────────────────────────────────
 describe('getCustomerById', () => {
-  it('should return a customer with tags:[] when found', async () => {
+  it('should return a customer with tags:[] when found in scope', async () => {
     mockCustomer.findFirst.mockResolvedValue(fakeCustomer);
 
-    const result = await getCustomerById('cus_abc123');
+    const result = await getCustomerById(STORE_A, 'cus_abc123');
 
     expect(mockCustomer.findFirst).toHaveBeenCalledWith({
-      where: { id: 'cus_abc123', deletedAt: null },
+      where: { id: 'cus_abc123', deletedAt: null, storeId: STORE_A },
     });
     expect(result.id).toBe('cus_abc123');
     expect(result.tags).toEqual([]);
@@ -286,28 +298,42 @@ describe('getCustomerById', () => {
   it('should throw NotFoundError when customer does not exist', async () => {
     mockCustomer.findFirst.mockResolvedValue(null);
 
-    await expect(getCustomerById('nonexistent')).rejects.toThrow(NotFoundError);
-    await expect(getCustomerById('nonexistent')).rejects.toThrow(
+    await expect(getCustomerById(STORE_A, 'nonexistent')).rejects.toThrow(NotFoundError);
+    await expect(getCustomerById(STORE_A, 'nonexistent')).rejects.toThrow(
       "Customer with id 'nonexistent' not found",
     );
+  });
+
+  it('should throw NotFoundError for a customer in another store (no existence leak)', async () => {
+    // Even though the customer exists in STORE_A, querying with STORE_B
+    // returns nothing because the storeId filter is part of the where clause.
+    mockCustomer.findFirst.mockResolvedValue(null);
+
+    await expect(getCustomerById(STORE_B, 'cus_abc123')).rejects.toThrow(NotFoundError);
+    expect(mockCustomer.findFirst).toHaveBeenCalledWith({
+      where: { id: 'cus_abc123', deletedAt: null, storeId: STORE_B },
+    });
   });
 
   it('should throw NotFoundError for a soft-deleted customer', async () => {
     mockCustomer.findFirst.mockResolvedValue(null);
 
-    await expect(getCustomerById('deleted_id')).rejects.toThrow(NotFoundError);
+    await expect(getCustomerById(STORE_A, 'deleted_id')).rejects.toThrow(NotFoundError);
   });
 });
 
 // ── updateCustomer ─────────────────────────────────────
 describe('updateCustomer', () => {
-  it('should update an existing customer and return tags:[]', async () => {
+  it('should update an existing customer in scope and return tags:[]', async () => {
     mockCustomer.findFirst.mockResolvedValue(fakeCustomer);
     const updated = { ...fakeCustomer, name: 'Jane Doe' };
     mockCustomer.update.mockResolvedValue(updated);
 
-    const result = await updateCustomer('cus_abc123', { name: 'Jane Doe' });
+    const result = await updateCustomer(STORE_A, 'cus_abc123', { name: 'Jane Doe' });
 
+    expect(mockCustomer.findFirst).toHaveBeenCalledWith({
+      where: { id: 'cus_abc123', deletedAt: null, storeId: STORE_A },
+    });
     expect(mockCustomer.update).toHaveBeenCalledWith({
       where: { id: 'cus_abc123' },
       data: { name: 'Jane Doe' },
@@ -317,10 +343,21 @@ describe('updateCustomer', () => {
     expect(result.warnings).toEqual([]);
   });
 
+  it('should throw NotFoundError when customer is not in scope (cross-store)', async () => {
+    mockCustomer.findFirst.mockResolvedValue(null); // not visible to STORE_B
+
+    await expect(
+      updateCustomer(STORE_B, 'cus_abc123', { name: 'Hijack' }),
+    ).rejects.toThrow(NotFoundError);
+    expect(mockCustomer.update).not.toHaveBeenCalled();
+  });
+
   it('should throw NotFoundError when updating non-existent customer', async () => {
     mockCustomer.findFirst.mockResolvedValue(null);
 
-    await expect(updateCustomer('nonexistent', { name: 'X' })).rejects.toThrow(NotFoundError);
+    await expect(
+      updateCustomer(STORE_A, 'nonexistent', { name: 'X' }),
+    ).rejects.toThrow(NotFoundError);
     expect(mockCustomer.update).not.toHaveBeenCalled();
   });
 
@@ -329,14 +366,13 @@ describe('updateCustomer', () => {
     const cleared = { ...fakeCustomer, phone: null };
     mockCustomer.update.mockResolvedValue(cleared);
 
-    const result = await updateCustomer('cus_abc123', { phone: null });
+    const result = await updateCustomer(STORE_A, 'cus_abc123', { phone: null });
 
     expect(mockCustomer.update).toHaveBeenCalledWith({
       where: { id: 'cus_abc123' },
       data: { phone: null },
     });
     expect(result.customer.phone).toBeNull();
-    // Clearing to null should never trigger duplicate warnings.
     expect(result.warnings).toEqual([]);
   });
 
@@ -344,13 +380,11 @@ describe('updateCustomer', () => {
     mockCustomer.findFirst.mockResolvedValue(fakeCustomer);
     mockCustomer.update.mockResolvedValue(fakeCustomer);
 
-    // Updating with the SAME phone/email — should not perform dup check at all.
-    const result = await updateCustomer('cus_abc123', {
+    const result = await updateCustomer(STORE_A, 'cus_abc123', {
       phone: fakeCustomer.phone,
       email: fakeCustomer.email,
     });
 
-    // Only the initial findFirst for existence check — no extra queries.
     expect(mockCustomer.findFirst).toHaveBeenCalledTimes(1);
     expect(result.warnings).toEqual([]);
   });
@@ -361,12 +395,11 @@ describe('updateCustomer', () => {
       .mockResolvedValueOnce({ id: 'other_cus' }); // phone duplicate check
     mockCustomer.update.mockResolvedValue({ ...fakeCustomer, phone: '+9999999999' });
 
-    const result = await updateCustomer('cus_abc123', { phone: '+9999999999' });
+    const result = await updateCustomer(STORE_A, 'cus_abc123', { phone: '+9999999999' });
 
     expect(result.warnings).toHaveLength(1);
     expect(result.warnings[0].field).toBe('phone');
     expect(result.warnings[0].existingCustomerId).toBe('other_cus');
-    // Update still proceeds — warning is soft.
     expect(mockCustomer.update).toHaveBeenCalled();
   });
 });
@@ -377,32 +410,42 @@ describe('deleteCustomer', () => {
     mockCustomer.findFirst.mockResolvedValue(fakeCustomer);
     mockCustomer.update.mockResolvedValue({ ...fakeCustomer, deletedAt: new Date() });
 
-    await deleteCustomer('cus_abc123');
+    await deleteCustomer(STORE_A, 'cus_abc123');
 
+    expect(mockCustomer.findFirst).toHaveBeenCalledWith({
+      where: { id: 'cus_abc123', deletedAt: null, storeId: STORE_A },
+    });
     expect(mockCustomer.update).toHaveBeenCalledWith({
       where: { id: 'cus_abc123' },
       data: { deletedAt: expect.any(Date) },
     });
   });
 
+  it('should throw NotFoundError when deleting a customer in another store', async () => {
+    mockCustomer.findFirst.mockResolvedValue(null); // STORE_B cannot see STORE_A's customer
+
+    await expect(deleteCustomer(STORE_B, 'cus_abc123')).rejects.toThrow(NotFoundError);
+    expect(mockCustomer.update).not.toHaveBeenCalled();
+  });
+
   it('should throw NotFoundError when deleting non-existent customer', async () => {
     mockCustomer.findFirst.mockResolvedValue(null);
 
-    await expect(deleteCustomer('nonexistent')).rejects.toThrow(NotFoundError);
+    await expect(deleteCustomer(STORE_A, 'nonexistent')).rejects.toThrow(NotFoundError);
     expect(mockCustomer.update).not.toHaveBeenCalled();
   });
 
   it('should throw NotFoundError when deleting an already-deleted customer', async () => {
     mockCustomer.findFirst.mockResolvedValue(null);
 
-    await expect(deleteCustomer('already_deleted')).rejects.toThrow(NotFoundError);
+    await expect(deleteCustomer(STORE_A, 'already_deleted')).rejects.toThrow(NotFoundError);
   });
 });
 
 // ── checkDuplicates ────────────────────────────────────
 describe('checkDuplicates', () => {
   it('should return empty array when no fields provided', async () => {
-    const warnings = await checkDuplicates('str_abc123', {});
+    const warnings = await checkDuplicates(STORE_A, {});
     expect(warnings).toEqual([]);
     expect(mockCustomer.findFirst).not.toHaveBeenCalled();
   });
@@ -410,7 +453,7 @@ describe('checkDuplicates', () => {
   it('should skip phone check when phone is null', async () => {
     mockCustomer.findFirst.mockResolvedValue(null);
 
-    await checkDuplicates('str_abc123', { phone: null, email: 'a@b.com' });
+    await checkDuplicates(STORE_A, { phone: null, email: 'a@b.com' });
 
     expect(mockCustomer.findFirst).toHaveBeenCalledTimes(1);
     expect(mockCustomer.findFirst).toHaveBeenCalledWith(
@@ -423,11 +466,7 @@ describe('checkDuplicates', () => {
   it('should pass excludeId as NOT filter', async () => {
     mockCustomer.findFirst.mockResolvedValue(null);
 
-    await checkDuplicates(
-      'str_abc123',
-      { phone: '+1111111111' },
-      'cus_self',
-    );
+    await checkDuplicates(STORE_A, { phone: '+1111111111' }, 'cus_self');
 
     expect(mockCustomer.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -441,7 +480,7 @@ describe('checkDuplicates', () => {
   it('should only query soft-not-deleted customers', async () => {
     mockCustomer.findFirst.mockResolvedValue(null);
 
-    await checkDuplicates('str_abc123', { phone: '+1111111111' });
+    await checkDuplicates(STORE_A, { phone: '+1111111111' });
 
     expect(mockCustomer.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({

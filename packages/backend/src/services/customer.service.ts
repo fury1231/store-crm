@@ -7,6 +7,7 @@ import {
 } from '../validators/customer.validator';
 import { NotFoundError } from '../utils/errors';
 import { buildPagination } from '../utils/pagination';
+import { scopedWhere } from '../utils/storeScope';
 
 /** Condition that excludes soft-deleted records. */
 const notDeleted = { deletedAt: null };
@@ -105,30 +106,43 @@ export async function checkDuplicates(
   return warnings;
 }
 
+/**
+ * Create a customer inside a specific store.
+ *
+ * `storeId` is sourced from `req.storeId` (set by `storeContext` middleware),
+ * NOT from the request body — clients cannot inject a foreign store id.
+ */
 export async function createCustomer(
+  storeId: string,
   data: CreateCustomerInput,
 ): Promise<{ customer: CustomerResponse; warnings: DuplicateWarning[] }> {
-  const warnings = await checkDuplicates(data.storeId, {
+  const warnings = await checkDuplicates(storeId, {
     phone: data.phone,
     email: data.email,
   });
 
-  const customer = await prisma.customer.create({ data });
+  const customer = await prisma.customer.create({
+    data: { ...data, storeId },
+  });
   return { customer: toCustomerResponse(customer), warnings };
 }
 
-export async function listCustomers(query: ListCustomersQuery) {
-  const { search, sortBy, order, storeId } = query;
+/**
+ * List customers, scoped to the active store. The `storeId` argument is
+ * required so it is impossible to forget the filter at the call site.
+ */
+export async function listCustomers(
+  storeId: string,
+  query: ListCustomersQuery,
+) {
+  const { search, sortBy, order } = query;
 
-  // Build the where clause: always exclude soft-deleted, optionally
-  // filter by store, and optionally apply a case-insensitive search
-  // across name, phone, and email. Typed as Prisma.CustomerWhereInput
-  // so typos in field names fail at compile time rather than silently
-  // becoming runtime no-ops.
-  const where: Prisma.CustomerWhereInput = { deletedAt: null };
-  if (storeId) {
-    where.storeId = storeId;
-  }
+  // Build a Prisma where clause anchored on `storeId`. Using `scopedWhere`
+  // means the storeId filter is always present — search/soft-delete are
+  // additional, narrowing conditions on top of it.
+  const where: Prisma.CustomerWhereInput = scopedWhere(storeId, {
+    deletedAt: null,
+  });
   if (search) {
     where.OR = [
       { name: { contains: search, mode: 'insensitive' } },
@@ -153,9 +167,16 @@ export async function listCustomers(query: ListCustomersQuery) {
   };
 }
 
-export async function getCustomerById(id: string): Promise<CustomerResponse> {
+/**
+ * Fetch a single customer by id, scoped to a store. Cross-store access
+ * returns NotFoundError (404) — not 403 — so existence cannot be probed.
+ */
+export async function getCustomerById(
+  storeId: string,
+  id: string,
+): Promise<CustomerResponse> {
   const customer = await prisma.customer.findFirst({
-    where: { id, ...notDeleted },
+    where: scopedWhere(storeId, { id, ...notDeleted }),
   });
 
   if (!customer) {
@@ -166,12 +187,14 @@ export async function getCustomerById(id: string): Promise<CustomerResponse> {
 }
 
 export async function updateCustomer(
+  storeId: string,
   id: string,
   data: UpdateCustomerInput,
 ): Promise<{ customer: CustomerResponse; warnings: DuplicateWarning[] }> {
-  // Fetch the existing customer (also verifies it exists and is not deleted).
+  // Fetch the existing customer (verifies it exists, is not deleted,
+  // AND lives inside the active store).
   const existing = await prisma.customer.findFirst({
-    where: { id, ...notDeleted },
+    where: scopedWhere(storeId, { id, ...notDeleted }),
   });
 
   if (!existing) {
@@ -190,7 +213,7 @@ export async function updateCustomer(
 
   const warnings =
     Object.keys(duplicateCheck).length > 0
-      ? await checkDuplicates(existing.storeId, duplicateCheck, id)
+      ? await checkDuplicates(storeId, duplicateCheck, id)
       : [];
 
   const updated = await prisma.customer.update({
@@ -201,9 +224,12 @@ export async function updateCustomer(
   return { customer: toCustomerResponse(updated), warnings };
 }
 
-export async function deleteCustomer(id: string): Promise<void> {
+export async function deleteCustomer(
+  storeId: string,
+  id: string,
+): Promise<void> {
   const existing = await prisma.customer.findFirst({
-    where: { id, ...notDeleted },
+    where: scopedWhere(storeId, { id, ...notDeleted }),
   });
 
   if (!existing) {
