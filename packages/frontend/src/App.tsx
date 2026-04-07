@@ -1,12 +1,44 @@
-function App() {
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { AuthProvider } from './contexts/AuthContext';
+import { ToastProvider } from './contexts/ToastContext';
+import ToastContainer from './components/ui/ToastContainer';
+import ProtectedRoute from './components/ProtectedRoute';
+import AppLayout from './components/layout/AppLayout';
+import LoginPage from './pages/LoginPage';
+import DashboardPage from './pages/DashboardPage';
+import CustomersPage from './pages/CustomersPage';
+import ProductsPage from './pages/ProductsPage';
+import SettingsPage from './pages/SettingsPage';
+
+export default function App() {
   return (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-      <div className="text-center">
-        <h1 className="text-3xl font-bold text-gray-900">Store CRM</h1>
-        <p className="mt-2 text-gray-600">Welcome to your store management system.</p>
-      </div>
-    </div>
+    <BrowserRouter>
+      <ToastProvider>
+        <AuthProvider>
+          <ToastContainer />
+          <Routes>
+            {/* Public route */}
+            <Route path="/login" element={<LoginPage />} />
+
+            {/* Protected routes with layout */}
+            <Route
+              element={
+                <ProtectedRoute>
+                  <AppLayout />
+                </ProtectedRoute>
+              }
+            >
+              <Route path="/dashboard" element={<DashboardPage />} />
+              <Route path="/customers" element={<CustomersPage />} />
+              <Route path="/products" element={<ProductsPage />} />
+              <Route path="/settings" element={<SettingsPage />} />
+            </Route>
+
+            {/* Default redirect */}
+            <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          </Routes>
+        </AuthProvider>
+      </ToastProvider>
+    </BrowserRouter>
   );
 }
-
-export default App;
