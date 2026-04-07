@@ -1,3 +1,4 @@
+import { Prisma } from '../generated/prisma/client';
 import { prisma } from '../prismaClient';
 import {
   CreateCustomerInput,
@@ -121,8 +122,10 @@ export async function listCustomers(query: ListCustomersQuery) {
 
   // Build the where clause: always exclude soft-deleted, optionally
   // filter by store, and optionally apply a case-insensitive search
-  // across name, phone, and email.
-  const where: Record<string, unknown> = { ...notDeleted };
+  // across name, phone, and email. Typed as Prisma.CustomerWhereInput
+  // so typos in field names fail at compile time rather than silently
+  // becoming runtime no-ops.
+  const where: Prisma.CustomerWhereInput = { deletedAt: null };
   if (storeId) {
     where.storeId = storeId;
   }
