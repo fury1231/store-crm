@@ -4,6 +4,7 @@ import {
   createCustomerSchema,
   updateCustomerSchema,
   listCustomersQuerySchema,
+  exportCustomersQuerySchema,
 } from '../validators/customer.validator';
 import { ValidationError } from '../utils/errors';
 
@@ -48,4 +49,33 @@ export async function update(req: Request, res: Response): Promise<void> {
 export async function remove(req: Request, res: Response): Promise<void> {
   await customerService.deleteCustomer(req.params.id);
   res.status(204).send();
+}
+
+/**
+ * `GET /api/customers/export?format=csv&...filters`
+ *
+ * Honours the same filter query params as the list endpoint. Emits a
+ * `text/csv` body with `Content-Disposition: attachment` so browsers
+ * download rather than render it. The filename includes an ISO
+ * timestamp so repeat exports don't clobber each other in the user's
+ * downloads folder.
+ */
+export async function exportCsv(req: Request, res: Response): Promise<void> {
+  const parsed = exportCustomersQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    throw new ValidationError(
+      'Invalid query parameters',
+      parsed.error.flatten().fieldErrors,
+    );
+  }
+
+  const { csv } = await customerService.exportCustomersCsv(parsed.data);
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="customers-${timestamp}.csv"`,
+  );
+  res.status(200).send(csv);
 }

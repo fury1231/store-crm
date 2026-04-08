@@ -22,6 +22,8 @@ import {
   updateCustomer,
   deleteCustomer,
   checkDuplicates,
+  buildCustomerWhere,
+  exportCustomersCsv,
 } from '../customer.service';
 
 // ── Fixtures ───────────────────────────────────────────
@@ -164,15 +166,20 @@ describe('listCustomers', () => {
       order: 'desc',
     });
 
+    // With no filters, the where clause collapses to a single deletedAt:null.
     expect(mockCustomer.count).toHaveBeenCalledWith({ where: { deletedAt: null } });
     expect(mockCustomer.findMany).toHaveBeenCalledWith({
       where: { deletedAt: null },
       skip: 10,
       take: 10,
       orderBy: { createdAt: 'desc' },
+      include: {
+        tags: { select: { id: true, name: true, color: true } },
+      },
     });
     expect(result.meta).toEqual({ page: 2, limit: 10, total: 25, totalPages: 3 });
     expect(result.customers).toHaveLength(1);
+    // Fixture has no `tags` relation, so toCustomerResponse normalises to [].
     expect(result.customers[0].tags).toEqual([]);
   });
 
@@ -191,11 +198,15 @@ describe('listCustomers', () => {
     expect(mockCustomer.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
-          deletedAt: null,
-          OR: [
-            { name: { contains: 'john', mode: 'insensitive' } },
-            { phone: { contains: 'john', mode: 'insensitive' } },
-            { email: { contains: 'john', mode: 'insensitive' } },
+          AND: [
+            { deletedAt: null },
+            {
+              OR: [
+                { name: { contains: 'john', mode: 'insensitive' } },
+                { phone: { contains: 'john', mode: 'insensitive' } },
+                { email: { contains: 'john', mode: 'insensitive' } },
+              ],
+            },
           ],
         },
       }),
@@ -232,7 +243,9 @@ describe('listCustomers', () => {
 
     expect(mockCustomer.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { deletedAt: null, storeId: 'str_abc123' },
+        where: {
+          AND: [{ deletedAt: null }, { storeId: 'str_abc123' }],
+        },
       }),
     );
   });
@@ -265,6 +278,21 @@ describe('listCustomers', () => {
     expect(result.customers).toEqual([]);
     expect(result.meta.total).toBe(0);
     expect(result.meta.totalPages).toBe(0);
+  });
+
+  it('should populate tags when the relation is loaded by findMany', async () => {
+    mockCustomer.count.mockResolvedValue(1);
+    const tags = [{ id: 'tag_vip', name: 'VIP', color: '#FFD700' }];
+    mockCustomer.findMany.mockResolvedValue([{ ...fakeCustomer, tags }]);
+
+    const result = await listCustomers({
+      page: 1,
+      limit: 20,
+      sortBy: 'createdAt',
+      order: 'desc',
+    });
+
+    expect(result.customers[0].tags).toEqual(tags);
   });
 });
 
@@ -463,5 +491,278 @@ describe('checkDuplicates', () => {
         where: expect.objectContaining({ deletedAt: null }),
       }),
     );
+  });
+});
+
+// ── buildCustomerWhere ─────────────────────────────────
+// Pure function tests — no Prisma calls required. Verifies the
+// composable where-builder produces the exact shape the service
+// will hand to Prisma for every combination of filter query params.
+describe('buildCustomerWhere', () => {
+  it('returns a flat deletedAt:null clause when no filters are supplied', () => {
+    const where = buildCustomerWhere({});
+    expect(where).toEqual({ deletedAt: null });
+  });
+
+  it('adds storeId as an AND clause', () => {
+    const where = buildCustomerWhere({ storeId: 'str_1' });
+    expect(where).toEqual({
+      AND: [{ deletedAt: null }, { storeId: 'str_1' }],
+    });
+  });
+
+  it('adds a case-insensitive multi-field OR for search', () => {
+    const where = buildCustomerWhere({ search: 'Alice' });
+    expect(where).toEqual({
+      AND: [
+        { deletedAt: null },
+        {
+          OR: [
+            { name: { contains: 'Alice', mode: 'insensitive' } },
+            { phone: { contains: 'Alice', mode: 'insensitive' } },
+            { email: { contains: 'Alice', mode: 'insensitive' } },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('adds email field-specific filter as case-insensitive contains', () => {
+    const where = buildCustomerWhere({ email: 'john@example.com' });
+    expect(where).toEqual({
+      AND: [
+        { deletedAt: null },
+        { email: { contains: 'john@example.com', mode: 'insensitive' } },
+      ],
+    });
+  });
+
+  it('adds phone field-specific filter as case-insensitive contains', () => {
+    const where = buildCustomerWhere({ phone: '555' });
+    expect(where).toEqual({
+      AND: [
+        { deletedAt: null },
+        { phone: { contains: '555', mode: 'insensitive' } },
+      ],
+    });
+  });
+
+  it('adds a tag subquery for tagId', () => {
+    const where = buildCustomerWhere({ tagId: 'tag_vip' });
+    expect(where).toEqual({
+      AND: [
+        { deletedAt: null },
+        { tags: { some: { id: 'tag_vip' } } },
+      ],
+    });
+  });
+
+  it('adds a tag subquery for comma-separated tag names', () => {
+    const where = buildCustomerWhere({ tags: ['vip', 'regular'] });
+    expect(where).toEqual({
+      AND: [
+        { deletedAt: null },
+        { tags: { some: { name: { in: ['vip', 'regular'] } } } },
+      ],
+    });
+  });
+
+  it('treats `group` as an alias for a single tag name', () => {
+    const where = buildCustomerWhere({ group: 'vip' });
+    expect(where).toEqual({
+      AND: [
+        { deletedAt: null },
+        { tags: { some: { name: { in: ['vip'] } } } },
+      ],
+    });
+  });
+
+  it('merges tagId, tags, and group into a single EXISTS subquery', () => {
+    const where = buildCustomerWhere({
+      tagId: 'tag_123',
+      tags: ['vip', 'regular'],
+      group: 'gold',
+    });
+    expect(where).toEqual({
+      AND: [
+        { deletedAt: null },
+        {
+          tags: {
+            some: {
+              OR: [
+                { id: 'tag_123' },
+                { name: { in: ['vip', 'regular', 'gold'] } },
+              ],
+            },
+          },
+        },
+      ],
+    });
+  });
+
+  it('deduplicates tag names when group overlaps with tags list', () => {
+    const where = buildCustomerWhere({
+      tags: ['vip', 'regular'],
+      group: 'vip',
+    });
+    // "vip" should appear only once in the `in` array.
+    expect(where).toEqual({
+      AND: [
+        { deletedAt: null },
+        { tags: { some: { name: { in: ['vip', 'regular'] } } } },
+      ],
+    });
+  });
+
+  it('adds createdAt gte when only createdAfter is supplied', () => {
+    const after = new Date('2026-01-01T00:00:00.000Z');
+    const where = buildCustomerWhere({ createdAfter: after });
+    expect(where).toEqual({
+      AND: [{ deletedAt: null }, { createdAt: { gte: after } }],
+    });
+  });
+
+  it('adds createdAt lte when only createdBefore is supplied', () => {
+    const before = new Date('2026-06-01T00:00:00.000Z');
+    const where = buildCustomerWhere({ createdBefore: before });
+    expect(where).toEqual({
+      AND: [{ deletedAt: null }, { createdAt: { lte: before } }],
+    });
+  });
+
+  it('combines createdAfter and createdBefore into a single DateTimeFilter', () => {
+    const after = new Date('2026-01-01T00:00:00.000Z');
+    const before = new Date('2026-06-01T00:00:00.000Z');
+    const where = buildCustomerWhere({ createdAfter: after, createdBefore: before });
+    expect(where).toEqual({
+      AND: [
+        { deletedAt: null },
+        { createdAt: { gte: after, lte: before } },
+      ],
+    });
+  });
+
+  it('composes every filter together with AND logic', () => {
+    const after = new Date('2026-01-01T00:00:00.000Z');
+    const where = buildCustomerWhere({
+      storeId: 'str_1',
+      search: 'john',
+      email: 'john@example.com',
+      phone: '555',
+      tags: ['vip'],
+      createdAfter: after,
+    });
+    // All six clauses plus the baseline deletedAt exclusion = 7.
+    expect(where).toHaveProperty('AND');
+    const clauses = (where as { AND: unknown[] }).AND;
+    expect(clauses).toHaveLength(7);
+    expect(clauses[0]).toEqual({ deletedAt: null });
+    expect(clauses).toContainEqual({ storeId: 'str_1' });
+    expect(clauses).toContainEqual({ createdAt: { gte: after } });
+  });
+});
+
+// ── exportCustomersCsv ─────────────────────────────────
+describe('exportCustomersCsv', () => {
+  it('returns a CSV with header row and zero data rows when no customers match', async () => {
+    mockCustomer.findMany.mockResolvedValue([]);
+
+    const result = await exportCustomersCsv({
+      format: 'csv',
+      sortBy: 'createdAt',
+      order: 'desc',
+    });
+
+    expect(result.rowCount).toBe(0);
+    expect(result.csv).toBe('name,phone,email,address,tags,createdAt');
+  });
+
+  it('serialises each customer into a CSV row including tag names', async () => {
+    mockCustomer.findMany.mockResolvedValue([
+      {
+        ...fakeCustomer,
+        tags: [
+          { id: 'tag_vip', name: 'VIP', color: '#FFD700' },
+          { id: 'tag_reg', name: 'Regular', color: '#1E90FF' },
+        ],
+      },
+    ]);
+
+    const result = await exportCustomersCsv({
+      format: 'csv',
+      sortBy: 'createdAt',
+      order: 'desc',
+    });
+
+    expect(result.rowCount).toBe(1);
+    const lines = result.csv.split('\r\n');
+    expect(lines[0]).toBe('name,phone,email,address,tags,createdAt');
+    // The phone `+1234567890` is prefixed with an apostrophe by the CSV
+    // encoder's formula-injection guard — `+` is a leading formula
+    // character in Excel/Sheets. This is the secure default.
+    expect(lines[1]).toBe(
+      "John Doe,'+1234567890,john@example.com,123 Main St,VIP|Regular,2026-01-01T00:00:00.000Z",
+    );
+  });
+
+  it('caps the number of rows at CSV_EXPORT_MAX_ROWS', async () => {
+    mockCustomer.findMany.mockResolvedValue([]);
+
+    await exportCustomersCsv({
+      format: 'csv',
+      sortBy: 'createdAt',
+      order: 'desc',
+    });
+
+    expect(mockCustomer.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ take: 10_000 }),
+    );
+  });
+
+  it('applies the same where-builder filters as listCustomers', async () => {
+    mockCustomer.findMany.mockResolvedValue([]);
+
+    await exportCustomersCsv({
+      format: 'csv',
+      storeId: 'str_1',
+      tags: ['vip'],
+      sortBy: 'createdAt',
+      order: 'desc',
+    });
+
+    expect(mockCustomer.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            { deletedAt: null },
+            { storeId: 'str_1' },
+            { tags: { some: { name: { in: ['vip'] } } } },
+          ],
+        },
+      }),
+    );
+  });
+
+  it('escapes commas and quotes in customer fields', async () => {
+    mockCustomer.findMany.mockResolvedValue([
+      {
+        ...fakeCustomer,
+        name: 'Smith, John "Johnny"',
+        address: '1 Main St, Apt 2',
+        tags: [],
+      },
+    ]);
+
+    const result = await exportCustomersCsv({
+      format: 'csv',
+      sortBy: 'createdAt',
+      order: 'desc',
+    });
+
+    const lines = result.csv.split('\r\n');
+    // The name field must be wrapped in quotes and have its internal
+    // double quotes doubled per RFC 4180.
+    expect(lines[1]).toContain('"Smith, John ""Johnny"""');
+    expect(lines[1]).toContain('"1 Main St, Apt 2"');
   });
 });

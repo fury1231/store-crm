@@ -14,6 +14,14 @@ router.use(asyncHandler(authenticate));
 // lives in the service layer.
 router.post('/', requirePermission('customers:write'), asyncHandler(customerController.create));
 router.get('/', requirePermission('customers:read'), asyncHandler(customerController.list));
+// NOTE: `/export` MUST be registered before `/:id` — Express matches routes
+// in declaration order, so a later `/:id` handler would otherwise swallow
+// the literal path `/export` as an id parameter and throw NotFoundError.
+router.get(
+  '/export',
+  requirePermission('customers:read'),
+  asyncHandler(customerController.exportCsv),
+);
 router.get('/:id', requirePermission('customers:read'), asyncHandler(customerController.getById));
 router.put('/:id', requirePermission('customers:write'), asyncHandler(customerController.update));
 router.delete('/:id', requirePermission('customers:write'), asyncHandler(customerController.remove));

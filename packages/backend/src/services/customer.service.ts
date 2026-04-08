@@ -4,12 +4,22 @@ import {
   CreateCustomerInput,
   UpdateCustomerInput,
   ListCustomersQuery,
+  ExportCustomersQuery,
 } from '../validators/customer.validator';
 import { NotFoundError } from '../utils/errors';
 import { buildPagination } from '../utils/pagination';
+import { toCsv, CsvColumn } from '../utils/csv';
 
 /** Condition that excludes soft-deleted records. */
 const notDeleted = { deletedAt: null };
+
+/**
+ * Hard cap on rows returned by the CSV export endpoint. Prevents a single
+ * filter-less export from pulling unbounded rows into memory. 10k rows ≈
+ * ~2 MB of CSV for a typical customer record, which is safe to hold in
+ * memory and send as a single response.
+ */
+const CSV_EXPORT_MAX_ROWS = 10_000;
 
 /**
  * Shape of a tag as it appears inside a customer response — slim, no
@@ -24,8 +34,8 @@ export interface CustomerTag {
 /**
  * Shape of a customer as returned from the API. The `tags` field is
  * always present so consumers can rely on it; it is empty for create
- * / list / update responses (which don't fetch the relation) and
- * populated for `getCustomerById` (which does).
+ * / update responses (which don't fetch the relation) and populated
+ * for `listCustomers` and `getCustomerById` (which do).
  */
 export interface CustomerResponse {
   id: string;
@@ -63,6 +73,111 @@ function toCustomerResponse<
     tags: tags ?? [],
   };
 }
+
+// ─────────────────────────────────────────────────────────────
+//  Composable where-clause builder
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Subset of the list/export query relevant to filtering — every field
+ * the where-builder understands. Shared by the list endpoint and the
+ * CSV export endpoint so they honour the exact same filter semantics.
+ */
+export type CustomerFilters = Pick<
+  ListCustomersQuery,
+  | 'search'
+  | 'storeId'
+  | 'email'
+  | 'phone'
+  | 'tagId'
+  | 'tags'
+  | 'group'
+  | 'createdAfter'
+  | 'createdBefore'
+>;
+
+/**
+ * Build a `Prisma.CustomerWhereInput` from the parsed filter query.
+ *
+ * Each filter is added independently to an `AND` array so composition
+ * is associative and commutative — the order in which filters are
+ * supplied has no effect on the generated query. Empty filters produce
+ * no clause, so `buildCustomerWhere({})` is equivalent to "all non-
+ * deleted customers".
+ *
+ * Tag filtering: `tagId`, `tags` (name list), and `group` (single name)
+ * are combined with OR within the tag subquery. That is, passing
+ * `tagId=abc&tags=vip,regular` matches customers that have **any** of
+ * those tags. This matches intuitive user expectation of "show me
+ * VIPs and Regulars and that one tagged customer".
+ */
+export function buildCustomerWhere(
+  filters: CustomerFilters,
+): Prisma.CustomerWhereInput {
+  const and: Prisma.CustomerWhereInput[] = [{ deletedAt: null }];
+
+  if (filters.storeId) {
+    and.push({ storeId: filters.storeId });
+  }
+
+  if (filters.search) {
+    and.push({
+      OR: [
+        { name: { contains: filters.search, mode: 'insensitive' } },
+        { phone: { contains: filters.search, mode: 'insensitive' } },
+        { email: { contains: filters.search, mode: 'insensitive' } },
+      ],
+    });
+  }
+
+  if (filters.email) {
+    and.push({ email: { contains: filters.email, mode: 'insensitive' } });
+  }
+
+  if (filters.phone) {
+    and.push({ phone: { contains: filters.phone, mode: 'insensitive' } });
+  }
+
+  // Collect tag filters into a single `tags: { some: { OR: [...] } }`
+  // so the SQL planner issues a single EXISTS subquery rather than
+  // one per tag filter.
+  const tagOr: Prisma.TagWhereInput[] = [];
+  if (filters.tagId) {
+    tagOr.push({ id: filters.tagId });
+  }
+  const tagNames = new Set<string>();
+  if (filters.tags) {
+    for (const name of filters.tags) tagNames.add(name);
+  }
+  if (filters.group) {
+    tagNames.add(filters.group);
+  }
+  if (tagNames.size > 0) {
+    tagOr.push({ name: { in: Array.from(tagNames) } });
+  }
+  if (tagOr.length > 0) {
+    and.push({
+      tags: {
+        some: tagOr.length === 1 ? tagOr[0] : { OR: tagOr },
+      },
+    });
+  }
+
+  if (filters.createdAfter || filters.createdBefore) {
+    const createdAt: Prisma.DateTimeFilter = {};
+    if (filters.createdAfter) createdAt.gte = filters.createdAfter;
+    if (filters.createdBefore) createdAt.lte = filters.createdBefore;
+    and.push({ createdAt });
+  }
+
+  // Flatten single-clause AND for readability in tests and query logs.
+  if (and.length === 1) return and[0];
+  return { AND: and };
+}
+
+// ─────────────────────────────────────────────────────────────
+//  Duplicate detection
+// ─────────────────────────────────────────────────────────────
 
 /**
  * Check whether a phone or email already exists for a customer in
@@ -121,6 +236,10 @@ export async function checkDuplicates(
   return warnings;
 }
 
+// ─────────────────────────────────────────────────────────────
+//  CRUD
+// ─────────────────────────────────────────────────────────────
+
 export async function createCustomer(
   data: CreateCustomerInput,
 ): Promise<{ customer: CustomerResponse; warnings: DuplicateWarning[] }> {
@@ -134,24 +253,8 @@ export async function createCustomer(
 }
 
 export async function listCustomers(query: ListCustomersQuery) {
-  const { search, sortBy, order, storeId } = query;
-
-  // Build the where clause: always exclude soft-deleted, optionally
-  // filter by store, and optionally apply a case-insensitive search
-  // across name, phone, and email. Typed as Prisma.CustomerWhereInput
-  // so typos in field names fail at compile time rather than silently
-  // becoming runtime no-ops.
-  const where: Prisma.CustomerWhereInput = { deletedAt: null };
-  if (storeId) {
-    where.storeId = storeId;
-  }
-  if (search) {
-    where.OR = [
-      { name: { contains: search, mode: 'insensitive' } },
-      { phone: { contains: search, mode: 'insensitive' } },
-      { email: { contains: search, mode: 'insensitive' } },
-    ];
-  }
+  const { sortBy, order } = query;
+  const where = buildCustomerWhere(query);
 
   const total = await prisma.customer.count({ where });
   const { skip, take, meta } = buildPagination(query, total);
@@ -161,6 +264,9 @@ export async function listCustomers(query: ListCustomersQuery) {
     skip,
     take,
     orderBy: { [sortBy]: order },
+    include: {
+      tags: { select: { id: true, name: true, color: true } },
+    },
   });
 
   return {
@@ -233,4 +339,61 @@ export async function deleteCustomer(id: string): Promise<void> {
     where: { id },
     data: { deletedAt: new Date() },
   });
+}
+
+// ─────────────────────────────────────────────────────────────
+//  CSV export
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * CSV columns exported by `GET /api/customers/export`. Order matters —
+ * this is the exact header row users will see. Dates are rendered as
+ * ISO-8601 strings so spreadsheets can parse them reliably.
+ */
+const CSV_COLUMNS: CsvColumn<CustomerResponse>[] = [
+  { header: 'name', get: (c) => c.name },
+  { header: 'phone', get: (c) => c.phone },
+  { header: 'email', get: (c) => c.email },
+  { header: 'address', get: (c) => c.address },
+  // Tags flattened as a pipe-separated list so the column stays a single
+  // value (semicolons are common CSV separators in some locales; pipes
+  // are unambiguous and readable).
+  {
+    header: 'tags',
+    get: (c) => c.tags.map((t) => t.name).join('|'),
+  },
+  {
+    header: 'createdAt',
+    get: (c) =>
+      c.createdAt instanceof Date
+        ? c.createdAt.toISOString()
+        : new Date(c.createdAt as unknown as string).toISOString(),
+  },
+];
+
+/**
+ * Export customers matching the same filters as the list endpoint as
+ * a CSV string. The result is capped at `CSV_EXPORT_MAX_ROWS` to prevent
+ * unbounded memory usage; callers hitting the cap should apply stricter
+ * filters (or we can add streaming in a later iteration if needed).
+ *
+ * Returns the serialised CSV body plus the number of rows exported so
+ * the controller can log/telemetry the export size.
+ */
+export async function exportCustomersCsv(
+  query: ExportCustomersQuery,
+): Promise<{ csv: string; rowCount: number }> {
+  const where = buildCustomerWhere(query);
+  const customers = await prisma.customer.findMany({
+    where,
+    orderBy: { [query.sortBy]: query.order },
+    take: CSV_EXPORT_MAX_ROWS,
+    include: {
+      tags: { select: { id: true, name: true, color: true } },
+    },
+  });
+
+  const responses = customers.map(toCustomerResponse);
+  const csv = toCsv(responses, CSV_COLUMNS);
+  return { csv, rowCount: responses.length };
 }
