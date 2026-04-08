@@ -159,19 +159,29 @@ describe.skipIf(!PERF_URL)('Customer search performance (real DB)', () => {
 
   it(`filter by tag name across 1200 customers runs in <${TARGET_MS}ms`, async () => {
     const buildCustomerWhere = await getListCustomers();
-    const where = buildCustomerWhere({ storeId, tags: ['VIP'] });
+    // Use lowercase `vip` to exercise the case-insensitive tag name
+    // filter path against the mixed-case seed tag `VIP`. If the filter
+    // ever regresses to case-sensitive, this test will return 0 rows
+    // but still pass the timing assertion — so we also verify below
+    // that the query actually returns data (not a silent empty set).
+    const where = buildCustomerWhere({ storeId, tags: ['vip'] });
 
-    const ms = await measure(() =>
-      prisma.customer.findMany({
+    let rowCount = 0;
+    const ms = await measure(async () => {
+      const rows = await prisma.customer.findMany({
         where,
         take: 20,
         orderBy: { createdAt: 'desc' },
         include: { tags: { select: { id: true, name: true, color: true } } },
-      }),
-    );
+      });
+      rowCount = rows.length;
+    });
     // eslint-disable-next-line no-console
-    console.log(`[perf] tags=VIP: median ${ms.toFixed(1)}ms`);
+    console.log(`[perf] tags=vip: median ${ms.toFixed(1)}ms (${rowCount} rows)`);
     expect(ms).toBeLessThan(TARGET_MS);
+    // Regression guard for the case-insensitive tag filter fix — if this
+    // ever drops to 0, Prisma reverted to case-sensitive `in` matching.
+    expect(rowCount).toBeGreaterThan(0);
   });
 
   it(`filter by date range across 1200 customers runs in <${TARGET_MS}ms`, async () => {
@@ -200,7 +210,9 @@ describe.skipIf(!PERF_URL)('Customer search performance (real DB)', () => {
     const where = buildCustomerWhere({
       storeId,
       search: 'Smith',
-      tags: ['VIP'],
+      // Lowercase — exercises the case-insensitive tag filter against
+      // seed tag `VIP`. See tag-name test above for rationale.
+      tags: ['vip'],
       createdAfter: new Date('2026-01-01'),
       createdBefore: new Date('2026-06-30'),
     });

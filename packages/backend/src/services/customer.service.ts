@@ -153,7 +153,11 @@ export function buildCustomerWhere(
     tagNames.add(filters.group);
   }
   if (tagNames.size > 0) {
-    tagOr.push({ name: { in: Array.from(tagNames) } });
+    // Case-insensitive match so `?tags=vip` still matches a seed tag named
+    // `VIP`. Every other string filter in this builder uses `mode: 'insensitive'`;
+    // tag names should not be the lone exception. Prisma's `in` operator on
+    // Postgres is case-sensitive by default, so this is load-bearing.
+    tagOr.push({ name: { in: Array.from(tagNames), mode: 'insensitive' } });
   }
   if (tagOr.length > 0) {
     and.push({
@@ -259,14 +263,17 @@ export async function listCustomers(query: ListCustomersQuery) {
   const total = await prisma.customer.count({ where });
   const { skip, take, meta } = buildPagination(query, total);
 
+  // Intentionally do NOT `include: { tags }` here — the list endpoint has
+  // always returned `tags: []` per `patterns.md`, and filter semantics work
+  // purely through the `where` clause (`{ tags: { some: { ... } } }`). Only
+  // `getCustomerById` and `exportCustomersCsv` populate tags. This keeps the
+  // list query fast (no join against `_CustomerToTag`) and preserves the
+  // pre-existing API shape for the list response.
   const customers = await prisma.customer.findMany({
     where,
     skip,
     take,
     orderBy: { [sortBy]: order },
-    include: {
-      tags: { select: { id: true, name: true, color: true } },
-    },
   });
 
   return {

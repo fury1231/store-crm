@@ -155,7 +155,7 @@ describe('createCustomer', () => {
 
 // ── listCustomers ──────────────────────────────────────
 describe('listCustomers', () => {
-  it('should return paginated customers with meta and tags:[]', async () => {
+  it('should return paginated customers with meta and tags:[] (no include)', async () => {
     mockCustomer.count.mockResolvedValue(25);
     mockCustomer.findMany.mockResolvedValue([fakeCustomer]);
 
@@ -168,15 +168,18 @@ describe('listCustomers', () => {
 
     // With no filters, the where clause collapses to a single deletedAt:null.
     expect(mockCustomer.count).toHaveBeenCalledWith({ where: { deletedAt: null } });
+    // Per patterns.md: listCustomers does NOT include tags — the relation
+    // is only hydrated by getCustomerById and exportCustomersCsv. The list
+    // endpoint falls back to `tags: []` via toCustomerResponse.
     expect(mockCustomer.findMany).toHaveBeenCalledWith({
       where: { deletedAt: null },
       skip: 10,
       take: 10,
       orderBy: { createdAt: 'desc' },
-      include: {
-        tags: { select: { id: true, name: true, color: true } },
-      },
     });
+    // Guard against regression: no `include` should be passed.
+    const call = mockCustomer.findMany.mock.calls[0][0];
+    expect(call).not.toHaveProperty('include');
     expect(result.meta).toEqual({ page: 2, limit: 10, total: 25, totalPages: 3 });
     expect(result.customers).toHaveLength(1);
     // Fixture has no `tags` relation, so toCustomerResponse normalises to [].
@@ -280,10 +283,13 @@ describe('listCustomers', () => {
     expect(result.meta.totalPages).toBe(0);
   });
 
-  it('should populate tags when the relation is loaded by findMany', async () => {
+  it('should always return tags:[] from list endpoint even if underlying row has tags', async () => {
+    // Defensive: even if the DB layer somehow surfaces a `tags` field
+    // (e.g. a future change accidentally re-adds the include), the list
+    // endpoint's public contract — per patterns.md — is an empty tags
+    // array. This test locks the pattern so list stays cheap.
     mockCustomer.count.mockResolvedValue(1);
-    const tags = [{ id: 'tag_vip', name: 'VIP', color: '#FFD700' }];
-    mockCustomer.findMany.mockResolvedValue([{ ...fakeCustomer, tags }]);
+    mockCustomer.findMany.mockResolvedValue([fakeCustomer]);
 
     const result = await listCustomers({
       page: 1,
@@ -292,7 +298,10 @@ describe('listCustomers', () => {
       order: 'desc',
     });
 
-    expect(result.customers[0].tags).toEqual(tags);
+    expect(result.customers[0].tags).toEqual([]);
+    // And the call to Prisma must not pass `include`.
+    const call = mockCustomer.findMany.mock.calls[0][0];
+    expect(call).not.toHaveProperty('include');
   });
 });
 
@@ -557,24 +566,45 @@ describe('buildCustomerWhere', () => {
     });
   });
 
-  it('adds a tag subquery for comma-separated tag names', () => {
+  it('adds a case-insensitive tag subquery for comma-separated tag names', () => {
     const where = buildCustomerWhere({ tags: ['vip', 'regular'] });
     expect(where).toEqual({
       AND: [
         { deletedAt: null },
-        { tags: { some: { name: { in: ['vip', 'regular'] } } } },
+        {
+          tags: {
+            some: {
+              name: { in: ['vip', 'regular'], mode: 'insensitive' },
+            },
+          },
+        },
       ],
     });
   });
 
-  it('treats `group` as an alias for a single tag name', () => {
+  it('treats `group` as a case-insensitive alias for a single tag name', () => {
     const where = buildCustomerWhere({ group: 'vip' });
     expect(where).toEqual({
       AND: [
         { deletedAt: null },
-        { tags: { some: { name: { in: ['vip'] } } } },
+        {
+          tags: {
+            some: { name: { in: ['vip'], mode: 'insensitive' } },
+          },
+        },
       ],
     });
+  });
+
+  it('matches tag names case-insensitively so ?tags=vip hits seed `VIP`', () => {
+    // Regression guard: Prisma's `in` is case-sensitive by default on
+    // Postgres. Users typing lowercase must still match mixed-case seeds.
+    const where = buildCustomerWhere({ tags: ['vip'] });
+    const and = (where as { AND: Array<Record<string, unknown>> }).AND;
+    const tagClause = and.find((c) => 'tags' in c) as {
+      tags: { some: { name: { in: string[]; mode: string } } };
+    };
+    expect(tagClause.tags.some.name.mode).toBe('insensitive');
   });
 
   it('merges tagId, tags, and group into a single EXISTS subquery', () => {
@@ -591,7 +621,12 @@ describe('buildCustomerWhere', () => {
             some: {
               OR: [
                 { id: 'tag_123' },
-                { name: { in: ['vip', 'regular', 'gold'] } },
+                {
+                  name: {
+                    in: ['vip', 'regular', 'gold'],
+                    mode: 'insensitive',
+                  },
+                },
               ],
             },
           },
@@ -609,7 +644,13 @@ describe('buildCustomerWhere', () => {
     expect(where).toEqual({
       AND: [
         { deletedAt: null },
-        { tags: { some: { name: { in: ['vip', 'regular'] } } } },
+        {
+          tags: {
+            some: {
+              name: { in: ['vip', 'regular'], mode: 'insensitive' },
+            },
+          },
+        },
       ],
     });
   });
@@ -736,7 +777,13 @@ describe('exportCustomersCsv', () => {
           AND: [
             { deletedAt: null },
             { storeId: 'str_1' },
-            { tags: { some: { name: { in: ['vip'] } } } },
+            {
+              tags: {
+                some: {
+                  name: { in: ['vip'], mode: 'insensitive' },
+                },
+              },
+            },
           ],
         },
       }),

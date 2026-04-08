@@ -423,14 +423,20 @@ describe('GET /api/customers', () => {
         where: {
           AND: [
             { deletedAt: null },
-            { tags: { some: { name: { in: ['vip', 'regular'] } } } },
+            {
+              tags: {
+                some: {
+                  name: { in: ['vip', 'regular'], mode: 'insensitive' },
+                },
+              },
+            },
           ],
         },
       }),
     );
   });
 
-  it('should filter by group as a single-tag-name alias', async () => {
+  it('should filter by group as a single-tag-name alias, case-insensitively', async () => {
     mockCustomer.count.mockResolvedValue(0);
     mockCustomer.findMany.mockResolvedValue([]);
 
@@ -443,7 +449,11 @@ describe('GET /api/customers', () => {
         where: {
           AND: [
             { deletedAt: null },
-            { tags: { some: { name: { in: ['vip'] } } } },
+            {
+              tags: {
+                some: { name: { in: ['vip'], mode: 'insensitive' } },
+              },
+            },
           ],
         },
       }),
@@ -552,7 +562,11 @@ describe('GET /api/customers', () => {
       email: { contains: 'john@example.com', mode: 'insensitive' },
     });
     expect(clauses).toContainEqual({
-      tags: { some: { name: { in: ['vip', 'regular'] } } },
+      tags: {
+        some: {
+          name: { in: ['vip', 'regular'], mode: 'insensitive' },
+        },
+      },
     });
     expect(clauses).toContainEqual({
       createdAt: { gte: new Date('2026-01-01') },
@@ -632,7 +646,11 @@ describe('GET /api/customers/export', () => {
             { email: { contains: 'alice', mode: 'insensitive' } },
           ],
         },
-        { tags: { some: { name: { in: ['vip'] } } } },
+        {
+          tags: {
+            some: { name: { in: ['vip'], mode: 'insensitive' } },
+          },
+        },
       ],
     });
     // The service must cap exports at 10,000 rows — verify the take.
