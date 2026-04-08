@@ -237,15 +237,23 @@ describe('GET /api/customers', () => {
       .set('Authorization', staffAuth());
 
     expect(res.status).toBe(200);
+    // The where-builder wraps every filter (including the default
+    // soft-delete exclusion) in an AND array once more than one clause
+    // is present — so search adds a second clause containing the OR.
     expect(mockCustomer.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({
-          OR: [
-            { name: { contains: 'john', mode: 'insensitive' } },
-            { phone: { contains: 'john', mode: 'insensitive' } },
-            { email: { contains: 'john', mode: 'insensitive' } },
+        where: {
+          AND: [
+            { deletedAt: null },
+            {
+              OR: [
+                { name: { contains: 'john', mode: 'insensitive' } },
+                { phone: { contains: 'john', mode: 'insensitive' } },
+                { email: { contains: 'john', mode: 'insensitive' } },
+              ],
+            },
           ],
-        }),
+        },
       }),
     );
   });
@@ -334,9 +342,386 @@ describe('GET /api/customers', () => {
 
     expect(mockCustomer.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ storeId: 'str_abc123' }),
+        where: {
+          AND: [{ deletedAt: null }, { storeId: 'str_abc123' }],
+        },
       }),
     );
+  });
+
+  // ── New M1 filter query params (#8) ──────────────────
+  it('should filter by email via field-specific contains', async () => {
+    mockCustomer.count.mockResolvedValue(0);
+    mockCustomer.findMany.mockResolvedValue([]);
+
+    await request(app)
+      .get('/api/customers?email=john@example.com')
+      .set('Authorization', staffAuth());
+
+    expect(mockCustomer.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            { deletedAt: null },
+            { email: { contains: 'john@example.com', mode: 'insensitive' } },
+          ],
+        },
+      }),
+    );
+  });
+
+  it('should filter by phone via field-specific contains', async () => {
+    mockCustomer.count.mockResolvedValue(0);
+    mockCustomer.findMany.mockResolvedValue([]);
+
+    await request(app)
+      .get('/api/customers?phone=555')
+      .set('Authorization', staffAuth());
+
+    expect(mockCustomer.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            { deletedAt: null },
+            { phone: { contains: '555', mode: 'insensitive' } },
+          ],
+        },
+      }),
+    );
+  });
+
+  it('should filter by tagId via tags.some subquery', async () => {
+    mockCustomer.count.mockResolvedValue(0);
+    mockCustomer.findMany.mockResolvedValue([]);
+
+    await request(app)
+      .get('/api/customers?tagId=tag_vip')
+      .set('Authorization', staffAuth());
+
+    expect(mockCustomer.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            { deletedAt: null },
+            { tags: { some: { id: 'tag_vip' } } },
+          ],
+        },
+      }),
+    );
+  });
+
+  it('should filter by comma-separated tag names', async () => {
+    mockCustomer.count.mockResolvedValue(0);
+    mockCustomer.findMany.mockResolvedValue([]);
+
+    await request(app)
+      .get('/api/customers?tags=vip,regular')
+      .set('Authorization', staffAuth());
+
+    expect(mockCustomer.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            { deletedAt: null },
+            {
+              tags: {
+                some: {
+                  name: { in: ['vip', 'regular'], mode: 'insensitive' },
+                },
+              },
+            },
+          ],
+        },
+      }),
+    );
+  });
+
+  it('should filter by group as a single-tag-name alias, case-insensitively', async () => {
+    mockCustomer.count.mockResolvedValue(0);
+    mockCustomer.findMany.mockResolvedValue([]);
+
+    await request(app)
+      .get('/api/customers?group=vip')
+      .set('Authorization', staffAuth());
+
+    expect(mockCustomer.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            { deletedAt: null },
+            {
+              tags: {
+                some: { name: { in: ['vip'], mode: 'insensitive' } },
+              },
+            },
+          ],
+        },
+      }),
+    );
+  });
+
+  it('should filter by createdAfter date', async () => {
+    mockCustomer.count.mockResolvedValue(0);
+    mockCustomer.findMany.mockResolvedValue([]);
+
+    await request(app)
+      .get('/api/customers?createdAfter=2026-01-01')
+      .set('Authorization', staffAuth());
+
+    expect(mockCustomer.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            { deletedAt: null },
+            { createdAt: { gte: new Date('2026-01-01') } },
+          ],
+        },
+      }),
+    );
+  });
+
+  it('should filter by createdBefore date', async () => {
+    mockCustomer.count.mockResolvedValue(0);
+    mockCustomer.findMany.mockResolvedValue([]);
+
+    await request(app)
+      .get('/api/customers?createdBefore=2026-06-01')
+      .set('Authorization', staffAuth());
+
+    expect(mockCustomer.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            { deletedAt: null },
+            { createdAt: { lte: new Date('2026-06-01') } },
+          ],
+        },
+      }),
+    );
+  });
+
+  it('should combine createdAfter and createdBefore into a single DateTime filter', async () => {
+    mockCustomer.count.mockResolvedValue(0);
+    mockCustomer.findMany.mockResolvedValue([]);
+
+    await request(app)
+      .get('/api/customers?createdAfter=2026-01-01&createdBefore=2026-06-01')
+      .set('Authorization', staffAuth());
+
+    expect(mockCustomer.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            { deletedAt: null },
+            {
+              createdAt: {
+                gte: new Date('2026-01-01'),
+                lte: new Date('2026-06-01'),
+              },
+            },
+          ],
+        },
+      }),
+    );
+  });
+
+  it('should return 400 when createdAfter > createdBefore', async () => {
+    const res = await request(app)
+      .get('/api/customers?createdAfter=2026-12-31&createdBefore=2026-01-01')
+      .set('Authorization', staffAuth());
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('should return 400 for invalid date format', async () => {
+    const res = await request(app)
+      .get('/api/customers?createdAfter=not-a-date')
+      .set('Authorization', staffAuth());
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('should combine storeId + search + email + tags + date into one AND clause', async () => {
+    mockCustomer.count.mockResolvedValue(0);
+    mockCustomer.findMany.mockResolvedValue([]);
+
+    await request(app)
+      .get(
+        '/api/customers?storeId=str_abc123&search=john&email=john@example.com&tags=vip,regular&createdAfter=2026-01-01',
+      )
+      .set('Authorization', staffAuth());
+
+    const call = mockCustomer.findMany.mock.calls[0][0];
+    expect(call.where).toHaveProperty('AND');
+    const clauses = call.where.AND;
+    // deletedAt + storeId + search + email + tags + createdAt = 6
+    expect(clauses).toHaveLength(6);
+    expect(clauses).toContainEqual({ deletedAt: null });
+    expect(clauses).toContainEqual({ storeId: 'str_abc123' });
+    expect(clauses).toContainEqual({
+      email: { contains: 'john@example.com', mode: 'insensitive' },
+    });
+    expect(clauses).toContainEqual({
+      tags: {
+        some: {
+          name: { in: ['vip', 'regular'], mode: 'insensitive' },
+        },
+      },
+    });
+    expect(clauses).toContainEqual({
+      createdAt: { gte: new Date('2026-01-01') },
+    });
+  });
+});
+
+// ── GET /api/customers/export ─────────────────────────
+describe('GET /api/customers/export', () => {
+  it('should return 200 with text/csv content-type and header row', async () => {
+    mockCustomer.findMany.mockResolvedValue([]);
+
+    const res = await request(app)
+      .get('/api/customers/export?format=csv')
+      .set('Authorization', staffAuth());
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toMatch(/^text\/csv/);
+    expect(res.headers['content-disposition']).toMatch(/^attachment; filename="customers-/);
+    expect(res.text).toBe('name,phone,email,address,tags,createdAt');
+  });
+
+  it('should default format to csv when omitted', async () => {
+    mockCustomer.findMany.mockResolvedValue([]);
+
+    const res = await request(app)
+      .get('/api/customers/export')
+      .set('Authorization', staffAuth());
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toMatch(/^text\/csv/);
+  });
+
+  it('should include customer rows with tags flattened as pipe-separated names', async () => {
+    mockCustomer.findMany.mockResolvedValue([
+      {
+        ...fakeCustomer,
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        tags: [
+          { id: 'tag_vip', name: 'VIP', color: '#FFD700' },
+          { id: 'tag_reg', name: 'Regular', color: '#1E90FF' },
+        ],
+      },
+    ]);
+
+    const res = await request(app)
+      .get('/api/customers/export?format=csv')
+      .set('Authorization', staffAuth());
+
+    expect(res.status).toBe(200);
+    const lines = res.text.split('\r\n');
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toBe('name,phone,email,address,tags,createdAt');
+    // Phone is prefixed with `'` by the formula-injection guard — `+`
+    // is a leading formula char in Excel/Sheets.
+    expect(lines[1]).toBe(
+      "John Doe,'+1234567890,john@example.com,123 Main St,VIP|Regular,2026-01-01T00:00:00.000Z",
+    );
+  });
+
+  it('should honour the same filters as the list endpoint', async () => {
+    mockCustomer.findMany.mockResolvedValue([]);
+
+    await request(app)
+      .get('/api/customers/export?storeId=str_abc123&search=alice&tags=vip')
+      .set('Authorization', staffAuth());
+
+    const call = mockCustomer.findMany.mock.calls[0][0];
+    expect(call.where).toEqual({
+      AND: [
+        { deletedAt: null },
+        { storeId: 'str_abc123' },
+        {
+          OR: [
+            { name: { contains: 'alice', mode: 'insensitive' } },
+            { phone: { contains: 'alice', mode: 'insensitive' } },
+            { email: { contains: 'alice', mode: 'insensitive' } },
+          ],
+        },
+        {
+          tags: {
+            some: { name: { in: ['vip'], mode: 'insensitive' } },
+          },
+        },
+      ],
+    });
+    // The service must cap exports at 10,000 rows — verify the take.
+    expect(call.take).toBe(10_000);
+  });
+
+  it('should escape commas and quotes in exported fields', async () => {
+    mockCustomer.findMany.mockResolvedValue([
+      {
+        ...fakeCustomer,
+        name: 'Smith, Jo "Jojo"',
+        address: '1 Main, Apt 2',
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        tags: [],
+      },
+    ]);
+
+    const res = await request(app)
+      .get('/api/customers/export')
+      .set('Authorization', staffAuth());
+
+    const lines = res.text.split('\r\n');
+    expect(lines[1]).toContain('"Smith, Jo ""Jojo"""');
+    expect(lines[1]).toContain('"1 Main, Apt 2"');
+  });
+
+  it('should NOT allow GET /api/customers/export to be matched by GET /:id', async () => {
+    // Regression: when route ordering is wrong, Express treats "export"
+    // as an :id param and calls getCustomerById which throws 404.
+    mockCustomer.findMany.mockResolvedValue([]);
+    mockCustomer.findFirst.mockResolvedValue(null);
+
+    const res = await request(app)
+      .get('/api/customers/export')
+      .set('Authorization', staffAuth());
+    expect(res.status).toBe(200);
+    expect(mockCustomer.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('should return 400 for invalid format', async () => {
+    const res = await request(app)
+      .get('/api/customers/export?format=xlsx')
+      .set('Authorization', staffAuth());
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('should require authentication', async () => {
+    const res = await request(app).get('/api/customers/export');
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+  });
+
+  it.each([
+    ['ADMIN', adminAuth],
+    ['MANAGER', managerAuth],
+    ['STAFF', staffAuth],
+  ])('allows %s to export (customers:read permission)', async (role, makeAuth) => {
+    mockUser.findUnique.mockResolvedValue({
+      id: defaultTestUser.id,
+      email: defaultTestUser.email,
+      role,
+      storeId: defaultTestUser.storeId,
+    });
+    mockCustomer.findMany.mockResolvedValue([]);
+
+    const res = await request(app)
+      .get('/api/customers/export')
+      .set('Authorization', makeAuth());
+    expect(res.status).toBe(200);
   });
 });
 

@@ -96,6 +96,12 @@ model Customer {
   @@index([storeId, email])
   @@index([phone])
   @@index([name])
+  // Composite index for date-range filters scoped to a store.
+  // Supports queries like `WHERE storeId = ? AND createdAt BETWEEN ? AND ?`
+  // which the list/export endpoints issue when `createdAfter`/`createdBefore`
+  // are combined with `storeId`. Descending on createdAt so the default
+  // `ORDER BY createdAt DESC` list query can read straight from the index.
+  @@index([storeId, createdAt(sort: Desc)])
 }
 
 model Tag {
