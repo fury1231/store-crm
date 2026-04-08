@@ -270,17 +270,32 @@ describe('listCustomers', () => {
 
 // ── getCustomerById ────────────────────────────────────
 describe('getCustomerById', () => {
-  it('should return a customer with tags:[] when found', async () => {
-    mockCustomer.findFirst.mockResolvedValue(fakeCustomer);
+  it('should return a customer with empty tags when none assigned', async () => {
+    mockCustomer.findFirst.mockResolvedValue({ ...fakeCustomer, tags: [] });
 
     const result = await getCustomerById('cus_abc123');
 
     expect(mockCustomer.findFirst).toHaveBeenCalledWith({
       where: { id: 'cus_abc123', deletedAt: null },
+      include: {
+        tags: { select: { id: true, name: true, color: true } },
+      },
     });
     expect(result.id).toBe('cus_abc123');
     expect(result.tags).toEqual([]);
     expect(result).not.toHaveProperty('deletedAt');
+  });
+
+  it('should return populated tags when the customer has tags assigned', async () => {
+    const tags = [
+      { id: 'tag_vip', name: 'VIP', color: '#FFD700' },
+      { id: 'tag_reg', name: 'Regular', color: '#1E90FF' },
+    ];
+    mockCustomer.findFirst.mockResolvedValue({ ...fakeCustomer, tags });
+
+    const result = await getCustomerById('cus_abc123');
+
+    expect(result.tags).toEqual(tags);
   });
 
   it('should throw NotFoundError when customer does not exist', async () => {

@@ -107,6 +107,9 @@ model Tag {
   store     Store      @relation(fields: [storeId], references: [id])
   customers Customer[] @relation("CustomerTags")
 
+  // Tag names are unique within a store — two stores can both have a "VIP" tag,
+  // but a single store cannot have two tags named "VIP".
+  @@unique([storeId, name])
   @@index([storeId])
 }
 
