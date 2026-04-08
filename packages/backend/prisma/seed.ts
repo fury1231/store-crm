@@ -47,16 +47,19 @@ async function main() {
   });
 
   // ── Tags ───────────────────────────────────
+  // Predefined tags every store gets out of the box. Names are unique
+  // per store via @@unique([storeId, name]); colors are hex strings so
+  // the frontend can render them however it likes.
   const tagVIP = await prisma.tag.create({
-    data: { name: 'VIP', color: '#FFD700', storeId: store.id },
+    data: { name: 'VIP', color: '#FFD700', storeId: store.id }, // gold
   });
 
-  const tagNewComer = await prisma.tag.create({
-    data: { name: 'Newcomer', color: '#87CEEB', storeId: store.id },
+  const tagRegular = await prisma.tag.create({
+    data: { name: 'Regular', color: '#1E90FF', storeId: store.id }, // blue
   });
 
-  const tagFrequent = await prisma.tag.create({
-    data: { name: 'Frequent', color: '#90EE90', storeId: store.id },
+  const tagNew = await prisma.tag.create({
+    data: { name: 'New', color: '#32CD32', storeId: store.id }, // green
   });
 
   // ── Customers (5) ─────────────────────────
@@ -69,7 +72,7 @@ async function main() {
         address: '456 Oak Ave',
         notes: 'Prefers weekend visits',
         storeId: store.id,
-        tags: { connect: [{ id: tagVIP.id }, { id: tagFrequent.id }] },
+        tags: { connect: [{ id: tagVIP.id }, { id: tagRegular.id }] },
       },
     }),
     prisma.customer.create({
@@ -79,7 +82,7 @@ async function main() {
         email: 'diana@example.com',
         address: '789 Pine Rd',
         storeId: store.id,
-        tags: { connect: [{ id: tagNewComer.id }] },
+        tags: { connect: [{ id: tagNew.id }] },
       },
     }),
     prisma.customer.create({
@@ -88,7 +91,7 @@ async function main() {
         phone: '0912-333-333',
         email: 'edward@example.com',
         storeId: store.id,
-        tags: { connect: [{ id: tagFrequent.id }] },
+        tags: { connect: [{ id: tagRegular.id }] },
       },
     }),
     prisma.customer.create({

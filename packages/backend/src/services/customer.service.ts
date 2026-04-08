@@ -12,9 +12,20 @@ import { buildPagination } from '../utils/pagination';
 const notDeleted = { deletedAt: null };
 
 /**
- * Shape of a customer as returned from the API. Tags are always
- * included (empty until the tagging system is built in a later
- * milestone) so API consumers can rely on the field existing.
+ * Shape of a tag as it appears inside a customer response — slim, no
+ * `storeId` because the customer already carries that.
+ */
+export interface CustomerTag {
+  id: string;
+  name: string;
+  color: string;
+}
+
+/**
+ * Shape of a customer as returned from the API. The `tags` field is
+ * always present so consumers can rely on it; it is empty for create
+ * / list / update responses (which don't fetch the relation) and
+ * populated for `getCustomerById` (which does).
  */
 export interface CustomerResponse {
   id: string;
@@ -26,7 +37,7 @@ export interface CustomerResponse {
   storeId: string;
   createdAt: Date;
   updatedAt: Date;
-  tags: never[];
+  tags: CustomerTag[];
 }
 
 /** Warning shape returned when a potential duplicate is detected. */
@@ -38,14 +49,19 @@ export interface DuplicateWarning {
 }
 
 /**
- * Attach an empty `tags: []` to a raw Prisma customer object.
- * Strips `deletedAt` so internal fields do not leak through the API.
+ * Normalise a raw Prisma customer object into the API response shape.
+ * Strips `deletedAt` so internal fields do not leak through the API
+ * and ensures `tags` is always an array (defaulting to `[]` when the
+ * caller did not include the relation).
  */
-function toCustomerResponse<T extends { deletedAt?: Date | null }>(
-  customer: T,
-): CustomerResponse {
-  const { deletedAt: _deletedAt, ...rest } = customer;
-  return { ...(rest as unknown as Omit<CustomerResponse, 'tags'>), tags: [] };
+function toCustomerResponse<
+  T extends { deletedAt?: Date | null; tags?: CustomerTag[] },
+>(customer: T): CustomerResponse {
+  const { deletedAt: _deletedAt, tags, ...rest } = customer;
+  return {
+    ...(rest as unknown as Omit<CustomerResponse, 'tags'>),
+    tags: tags ?? [],
+  };
 }
 
 /**
@@ -156,6 +172,9 @@ export async function listCustomers(query: ListCustomersQuery) {
 export async function getCustomerById(id: string): Promise<CustomerResponse> {
   const customer = await prisma.customer.findFirst({
     where: { id, ...notDeleted },
+    include: {
+      tags: { select: { id: true, name: true, color: true } },
+    },
   });
 
   if (!customer) {
